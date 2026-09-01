@@ -8,15 +8,21 @@ import {
   N_MIN,
   PROMPT_MAX_LENGTH,
   REFERENCE_MAX_BYTES,
+  STYLE_MAX_LENGTH,
+  STYLE_PRESETS,
   type AspectRatio,
   type Model,
 } from "@/lib/minimax";
+
+const CUSTOM_STYLE = "自定义";
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState<Model>("image-01");
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
   const [n, setN] = useState(1);
+  const [styleChoice, setStyleChoice] = useState("");
+  const [customStyle, setCustomStyle] = useState("");
   const [refImage, setRefImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +69,8 @@ export default function Home() {
           model,
           aspectRatio,
           n,
+          style:
+            styleChoice === CUSTOM_STYLE ? customStyle.trim() : styleChoice,
           ...(refImage
             ? { subjectReference: [{ type: "character", imageFile: refImage }] }
             : {}),
@@ -139,7 +147,35 @@ export default function Home() {
               className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
             />
           </label>
+
+          <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+            风格
+            <select
+              value={styleChoice}
+              onChange={(e) => setStyleChoice(e.target.value)}
+              className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+            >
+              <option value="">无</option>
+              {STYLE_PRESETS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+              <option value={CUSTOM_STYLE}>{CUSTOM_STYLE}</option>
+            </select>
+          </label>
         </div>
+
+        {styleChoice === CUSTOM_STYLE && (
+          <input
+            type="text"
+            value={customStyle}
+            maxLength={STYLE_MAX_LENGTH}
+            onChange={(e) => setCustomStyle(e.target.value)}
+            placeholder="输入自定义风格，例如：复古胶片、水彩插画、3D 皮克斯"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+          />
+        )}
 
         <div className="flex flex-col gap-2">
           <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">

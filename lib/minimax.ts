@@ -20,6 +20,28 @@ export const N_MIN = 1;
 export const N_MAX = 9;
 export const REQUEST_TIMEOUT_MS = 120_000;
 
+export const STYLE_PRESETS = [
+  "电影",
+  "写实",
+  "日漫",
+  "国风动漫",
+  "3D 卡通",
+  "水彩",
+  "油画",
+  "素描",
+  "中国水墨",
+  "像素艺术",
+  "赛博朋克",
+  "复古胶片",
+  "扁平插画",
+  "儿童绘本",
+  "浮世绘",
+  "概念艺术",
+] as const;
+export type StylePreset = (typeof STYLE_PRESETS)[number];
+export const STYLE_MAX_LENGTH = 100;
+const STYLE_PROMPT_PREFIX = "。画面风格：";
+
 export const REFERENCE_SUBJECT_TYPES = ["character"] as const;
 export type SubjectType = (typeof REFERENCE_SUBJECT_TYPES)[number];
 
@@ -45,7 +67,13 @@ export interface GenerationParams {
   prompt: string;
   aspectRatio: AspectRatio;
   n: number;
+  style?: string;
   subjectReference?: SubjectReference[];
+}
+
+export function composePrompt(prompt: string, style?: string): string {
+  const trimmed = style?.trim();
+  return trimmed ? `${prompt}${STYLE_PROMPT_PREFIX}${trimmed}` : prompt;
 }
 
 export interface GenerationResult {
@@ -91,6 +119,14 @@ export function validateParams(params: GenerationParams): string | null {
   if (params.prompt.length > PROMPT_MAX_LENGTH) {
     return `prompt 最长 ${PROMPT_MAX_LENGTH} 字符，当前 ${params.prompt.length}`;
   }
+  const trimmedStyle = params.style?.trim();
+  if (trimmedStyle && trimmedStyle.length > STYLE_MAX_LENGTH) {
+    return `风格描述不能超过 ${STYLE_MAX_LENGTH} 字符，当前 ${trimmedStyle.length}`;
+  }
+  const composed = composePrompt(params.prompt, params.style);
+  if (composed.length > PROMPT_MAX_LENGTH) {
+    return `描述+风格合计最长 ${PROMPT_MAX_LENGTH} 字符，当前 ${composed.length}`;
+  }
   if (!MODELS.includes(params.model)) {
     return `model 必须是 ${MODELS.join(" / ")} 之一`;
   }
@@ -110,7 +146,7 @@ export function validateParams(params: GenerationParams): string | null {
 export function buildRequestBody(params: GenerationParams): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: params.model,
-    prompt: params.prompt,
+    prompt: composePrompt(params.prompt, params.style),
     aspect_ratio: params.aspectRatio,
     n: params.n,
     response_format: "url",

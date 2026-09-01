@@ -4,6 +4,7 @@ import {
   MODELS,
   PROMPT_MAX_LENGTH,
   REFERENCE_MAX_BYTES,
+  STYLE_MAX_LENGTH,
   buildRequestBody,
   parseResponse,
   validateParams,
@@ -41,6 +42,28 @@ describe("buildRequestBody", () => {
         prompt: "一只戴帽子的猫",
         aspect_ratio: "16:9",
         n: 4,
+        response_format: "url",
+      },
+    },
+    {
+      name: "带风格时将风格注入 prompt",
+      params: makeParams({ style: "电影" }),
+      want: {
+        model: "image-01",
+        prompt: "一只戴帽子的猫。画面风格：电影",
+        aspect_ratio: "1:1",
+        n: 1,
+        response_format: "url",
+      },
+    },
+    {
+      name: "空字符串风格不注入",
+      params: makeParams({ style: "  " }),
+      want: {
+        model: "image-01",
+        prompt: "一只戴帽子的猫",
+        aspect_ratio: "1:1",
+        n: 1,
         response_format: "url",
       },
     },
@@ -177,6 +200,26 @@ describe("validateParams", () => {
         params: makeParams({ n: 1.5 }),
         wantNull: false,
         wantIncludes: "n",
+      },
+      {
+        name: "风格超长被拒",
+        params: makeParams({ style: "幻".repeat(STYLE_MAX_LENGTH + 1) }),
+        wantNull: false,
+        wantIncludes: "风格",
+      },
+      {
+        name: "风格+prompt 组合后超过 1500 被拒",
+        params: makeParams({
+          prompt: "a".repeat(PROMPT_MAX_LENGTH - 3),
+          style: "电影",
+        }),
+        wantNull: false,
+        wantIncludes: "1500",
+      },
+      {
+        name: "合法风格描述通过",
+        params: makeParams({ style: "国风动漫" }),
+        wantNull: true,
       },
       {
         name: "合法 https 参考图 URL 通过",
