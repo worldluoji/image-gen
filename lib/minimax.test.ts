@@ -3,13 +3,14 @@ import {
   ASPECT_RATIOS,
   MODELS,
   PROMPT_MAX_LENGTH,
+  REFERENCE_MAX_BYTES,
   buildRequestBody,
   parseResponse,
   validateParams,
-  type TextToImageParams,
+  type GenerationParams,
 } from "./minimax";
 
-function makeParams(overrides: Partial<TextToImageParams> = {}): TextToImageParams {
+function makeParams(overrides: Partial<GenerationParams> = {}): GenerationParams {
   return {
     model: "image-01",
     prompt: "一只戴帽子的猫",
@@ -41,6 +42,24 @@ describe("buildRequestBody", () => {
         aspect_ratio: "16:9",
         n: 4,
         response_format: "url",
+      },
+    },
+    {
+      name: "带参考图时映射为 subject_reference",
+      params: makeParams({
+        subjectReference: [
+          { type: "character", imageFile: "https://example.com/a.jpg" },
+        ],
+      }),
+      want: {
+        model: "image-01",
+        prompt: "一只戴帽子的猫",
+        aspect_ratio: "1:1",
+        n: 1,
+        response_format: "url",
+        subject_reference: [
+          { type: "character", image_file: "https://example.com/a.jpg" },
+        ],
       },
     },
   ];
@@ -112,7 +131,7 @@ describe("parseResponse", () => {
 });
 
 describe("validateParams", () => {
-  const cases: { name: string; params: TextToImageParams; wantNull: boolean; wantIncludes?: string }[] =
+  const cases: { name: string; params: GenerationParams; wantNull: boolean; wantIncludes?: string }[] =
     [
       { name: "合法参数通过", params: makeParams(), wantNull: true },
       {
@@ -158,6 +177,59 @@ describe("validateParams", () => {
         params: makeParams({ n: 1.5 }),
         wantNull: false,
         wantIncludes: "n",
+      },
+      {
+        name: "合法 https 参考图 URL 通过",
+        params: makeParams({
+          subjectReference: [
+            { type: "character", imageFile: "https://example.com/a.jpg" },
+          ],
+        }),
+        wantNull: true,
+      },
+      {
+        name: "合法 jpeg data URL 参考图通过",
+        params: makeParams({
+          subjectReference: [
+            { type: "character", imageFile: "data:image/jpeg;base64,QUJDRA==" },
+          ],
+        }),
+        wantNull: true,
+      },
+      {
+        name: "非法主体类型被拒",
+        params: makeParams({
+          subjectReference: [
+            { type: "object" as "character", imageFile: "https://example.com/a.jpg" },
+          ],
+        }),
+        wantNull: false,
+        wantIncludes: "subject_reference",
+      },
+      {
+        name: "非图片 data URL 被拒",
+        params: makeParams({
+          subjectReference: [
+            { type: "character", imageFile: "data:text/html;base64,PGgxPjE8L2gxPg==" },
+          ],
+        }),
+        wantNull: false,
+        wantIncludes: "subject_reference",
+      },
+      {
+        name: "参考图超过 10MB 被拒",
+        params: makeParams({
+          subjectReference: [
+            {
+              type: "character",
+              imageFile:
+                "data:image/png;base64," +
+                "A".repeat(Math.ceil((REFERENCE_MAX_BYTES * 4) / 3) + 4),
+            },
+          ],
+        }),
+        wantNull: false,
+        wantIncludes: "10MB",
       },
     ];
 

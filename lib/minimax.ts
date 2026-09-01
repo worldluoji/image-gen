@@ -20,6 +20,12 @@ export const N_MIN = 1;
 export const N_MAX = 9;
 export const REQUEST_TIMEOUT_MS = 120_000;
 
+export const REFERENCE_SUBJECT_TYPES = ["character"] as const;
+export type SubjectType = (typeof REFERENCE_SUBJECT_TYPES)[number];
+
+export const REFERENCE_MAX_BYTES = 10 * 1024 * 1024;
+const REFERENCE_FILE_RE = /^(https?:\/\/.+|data:image\/(jpeg|png);base64,.+)$/;
+
 const STATUS_CODE_MESSAGES: Record<number, string> = {
   1002: "触发限流，请稍后再试",
   1004: "账号鉴权失败，请检查 API Key (MINIMAX_API_KEY) 是否正确",
@@ -29,14 +35,20 @@ const STATUS_CODE_MESSAGES: Record<number, string> = {
   2049: "无效的 API Key，请检查 MINIMAX_API_KEY 配置",
 };
 
-export interface TextToImageParams {
+export interface SubjectReference {
+  type: SubjectType;
+  imageFile: string;
+}
+
+export interface GenerationParams {
   model: Model;
   prompt: string;
   aspectRatio: AspectRatio;
   n: number;
+  subjectReference?: SubjectReference[];
 }
 
-export interface TextToImageResult {
+export interface GenerationResult {
   imageUrls: string[];
   successCount: number;
   failedCount: number;
@@ -47,7 +59,32 @@ interface MiniMaxBaseResp {
   status_msg?: string;
 }
 
-export function validateParams(params: TextToImageParams): string | null {
+function validateSubjectReference(
+  refs: SubjectReference[] | undefined,
+): string | null {
+  if (!refs || refs.length === 0) {
+    return null;
+  }
+  for (const ref of refs) {
+    if (!REFERENCE_SUBJECT_TYPES.includes(ref.type)) {
+      return `subject_reference type 必须是 ${REFERENCE_SUBJECT_TYPES.join(" / ")} 之一`;
+    }
+    if (typeof ref.imageFile !== "string" || !REFERENCE_FILE_RE.test(ref.imageFile)) {
+      return "subject_reference image_file 必须是 http(s) URL 或 image/jpeg、image/png 的 Base64 Data URL";
+    }
+    const base64Start = ref.imageFile.indexOf("base64,");
+    if (base64Start >= 0) {
+      const base64Length = ref.imageFile.length - base64Start - "base64,".length;
+      const approxBytes = (base64Length * 3) / 4;
+      if (approxBytes > REFERENCE_MAX_BYTES) {
+        return `参考图不能超过 10MB，当前约 ${(approxBytes / 1024 / 1024).toFixed(1)}MB`;
+      }
+    }
+  }
+  return null;
+}
+
+export function validateParams(params: GenerationParams): string | null {
   if (typeof params.prompt !== "string" || params.prompt.trim() === "") {
     return "prompt 不能为空";
   }
@@ -67,20 +104,27 @@ export function validateParams(params: TextToImageParams): string | null {
   ) {
     return `n 必须是 ${N_MIN}-${N_MAX} 之间的整数`;
   }
-  return null;
+  return validateSubjectReference(params.subjectReference);
 }
 
-export function buildRequestBody(params: TextToImageParams): Record<string, unknown> {
-  return {
+export function buildRequestBody(params: GenerationParams): Record<string, unknown> {
+  const body: Record<string, unknown> = {
     model: params.model,
     prompt: params.prompt,
     aspect_ratio: params.aspectRatio,
     n: params.n,
     response_format: "url",
   };
+  if (params.subjectReference && params.subjectReference.length > 0) {
+    body.subject_reference = params.subjectReference.map((ref) => ({
+      type: ref.type,
+      image_file: ref.imageFile,
+    }));
+  }
+  return body;
 }
 
-export function parseResponse(json: unknown): TextToImageResult {
+export function parseResponse(json: unknown): GenerationResult {
   const resp = json as {
     data?: { image_urls?: string[] };
     metadata?: {
@@ -113,10 +157,10 @@ export function parseResponse(json: unknown): TextToImageResult {
   };
 }
 
-export async function textToImage(
-  params: TextToImageParams,
+export async function generateImages(
+  params: GenerationParams,
   apiKey: string,
-): Promise<TextToImageResult> {
+): Promise<GenerationResult> {
   const response = await fetch(`${MINIMAX_BASE_URL}${IMAGE_GENERATION_PATH}`, {
     method: "POST",
     headers: {

@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import {
-  textToImage,
+  generateImages,
   validateParams,
-  type TextToImageParams,
+  type GenerationParams,
 } from "@/lib/minimax";
 
 export async function POST(request: Request) {
@@ -13,8 +13,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "请求体必须是合法 JSON" }, { status: 400 });
   }
 
-  const params = body as Partial<TextToImageParams>;
-  const invalid = validateParams(params as TextToImageParams);
+  const params = body as Partial<GenerationParams>;
+  const invalid = validateParams(params as GenerationParams);
   if (invalid) {
     return NextResponse.json({ error: invalid }, { status: 400 });
   }
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await textToImage(params as TextToImageParams, apiKey);
+    const result = await generateImages(params as GenerationParams, apiKey);
     return NextResponse.json({
       images: result.imageUrls,
       successCount: result.successCount,
