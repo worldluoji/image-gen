@@ -1,69 +1,140 @@
-import Image from "next/image";
+"use client";
+
+import { useState, type SubmitEvent } from "react";
+import {
+  ASPECT_RATIOS,
+  MODELS,
+  N_MAX,
+  N_MIN,
+  PROMPT_MAX_LENGTH,
+  type AspectRatio,
+  type Model,
+} from "@/lib/minimax";
 
 export default function Home() {
+  const [prompt, setPrompt] = useState("");
+  const [model, setModel] = useState<Model>("image-01");
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
+  const [n, setN] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [images, setImages] = useState<string[]>([]);
+
+  async function handleSubmit(e: SubmitEvent) {
+    e.preventDefault();
+    setError(null);
+    if (prompt.trim() === "") {
+      setError("请输入图片描述");
+      return;
+    }
+    setLoading(true);
+    setImages([]);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, model, aspectRatio, n }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? `请求失败 (HTTP ${res.status})`);
+      } else {
+        setImages(data.images);
+      }
+    } catch {
+      setError("网络错误，请稍后重试");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-12">
+      <h1 className="text-2xl font-semibold tracking-tight">
+        AI 文生图 <span className="text-base font-normal text-zinc-500">MiniMax</span>
+      </h1>
+
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          maxLength={PROMPT_MAX_LENGTH}
+          rows={4}
+          placeholder="描述你想生成的图片，例如：一只戴帽子的猫走在东京街头，赛博朋克风格"
+          className="rounded-lg border border-zinc-300 bg-white p-3 text-sm text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+
+        <div className="flex flex-wrap gap-4">
+          <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+            模型
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value as Model)}
+              className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              {MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+            宽高比
+            <select
+              value={aspectRatio}
+              onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}
+              className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
             >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+              {ASPECT_RATIOS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+            数量
+            <input
+              type="number"
+              min={N_MIN}
+              max={N_MAX}
+              value={n}
+              onChange={(e) => setN(Number(e.target.value))}
+              className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          </label>
         </div>
-      </main>
-    </div>
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="h-11 rounded-full bg-black px-6 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-black dark:hover:bg-zinc-300"
+        >
+          {loading ? "生成中，请稍候…" : "生成图片"}
+        </button>
+      </form>
+
+      {error && (
+        <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          {error}
+        </p>
+      )}
+
+      {images.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {images.map((url, i) => (
+            <img
+              key={`${url}-${i}`}
+              src={url}
+              alt={`生成图片 ${i + 1}`}
+              className="w-full rounded-lg border border-zinc-200 dark:border-zinc-800"
+            />
+          ))}
+        </div>
+      )}
+    </main>
   );
 }
