@@ -8,7 +8,7 @@ import {
   appendHistory,
   isLocalGeneratedPath,
   localReferenceToDataUrl,
-  saveGeneratedImage,
+  saveGeneratedFile,
   toLocalImageName,
   type GeneratedImage,
   type HistoryEntry,
@@ -69,7 +69,7 @@ export async function POST(request: Request) {
     const images: GeneratedImage[] = await Promise.all(
       result.imageUrls.map(async (remoteUrl, i) => {
         const fileName = toLocalImageName(remoteUrl, i + 1, timestamp);
-        const saved = await saveGeneratedImage(remoteUrl, fileName);
+        const saved = await saveGeneratedFile(remoteUrl, fileName);
         return {
           localUrl: saved ? `/generated/${fileName}` : remoteUrl,
           remoteUrl,

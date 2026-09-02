@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   HISTORY_MAX_ENTRIES,
   appendHistory,
+  attachVideoToHistory,
   isLocalGeneratedPath,
   localReferenceToDataUrl,
   readHistory,
   toLocalImageName,
+  toLocalVideoName,
   type HistoryEntry,
 } from "./storage";
 
@@ -194,5 +196,109 @@ describe("readHistory / appendHistory", () => {
   it("HISTORY_MAX_ENTRIES 为正整数常量", () => {
     expect(Number.isInteger(HISTORY_MAX_ENTRIES)).toBe(true);
     expect(HISTORY_MAX_ENTRIES).toBeGreaterThan(0);
+  });
+});
+
+describe("toLocalVideoName", () => {
+  const cases = [
+    { index: 1, want: "1700000000000-1.mp4" },
+    { index: 2, want: "1700000000000-2.mp4" },
+    { index: 9, want: "1700000000000-9.mp4" },
+  ];
+  for (const c of cases) {
+    it(`序号 ${c.index} 生成 ${c.want}`, () => {
+      expect(toLocalVideoName(c.index, TIMESTAMP)).toBe(c.want);
+    });
+  }
+});
+
+describe("attachVideoToHistory", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "image-gen-attach-"));
+    file = join(dir, "history.json");
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("成功挂载 videoUrl 并可读回", async () => {
+    await appendHistory(
+      makeEntry({
+        id: "h1",
+        images: [
+          { localUrl: "/generated/1-1.png", remoteUrl: "https://x/1.png" },
+          { localUrl: "/generated/1-2.png", remoteUrl: "https://x/2.png" },
+        ],
+      }),
+      file,
+      50,
+    );
+    const ok = await attachVideoToHistory(
+      "h1",
+      1,
+      "/generated/2-1.mp4",
+      file,
+    );
+    expect(ok).toBe(true);
+    const history = await readHistory(file);
+    expect(history[0].images[1].videoUrl).toBe("/generated/2-1.mp4");
+    expect(history[0].images[0].videoUrl).toBeUndefined();
+  });
+
+  it("同图二次挂载覆盖旧 videoUrl", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    await attachVideoToHistory("h1", 0, "/generated/2-1.mp4", file);
+    await attachVideoToHistory("h1", 0, "/generated/3-1.mp4", file);
+    const history = await readHistory(file);
+    expect(history[0].images[0].videoUrl).toBe("/generated/3-1.mp4");
+  });
+
+  it("historyId 不存在时返回 false 且不改写文件", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    const before = await readHistory(file);
+    const ok = await attachVideoToHistory("missing", 0, "/generated/2-1.mp4", file);
+    expect(ok).toBe(false);
+    expect(await readHistory(file)).toEqual(before);
+  });
+
+  it("imageIndex 越界时返回 false", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    const ok = await attachVideoToHistory("h1", 5, "/generated/2-1.mp4", file);
+    expect(ok).toBe(false);
+  });
+
+  it("imageIndex 非法（负数/非整数）时返回 false", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    expect(await attachVideoToHistory("h1", -1, "/generated/2-1.mp4", file)).toBe(false);
+    expect(await attachVideoToHistory("h1", 0.5, "/generated/2-1.mp4", file)).toBe(false);
+  });
+
+  it("兼容无 videoUrl 字段的旧格式条目，其他字段原样保留", async () => {
+    const legacy = [
+      {
+        id: "old",
+        createdAt: 1,
+        prompt: "旧记录",
+        model: "image-01",
+        aspectRatio: "1:1",
+        n: 1,
+        images: [{ localUrl: "/generated/1-1.png", remoteUrl: "https://x/1.png" }],
+        failedCount: 0,
+      },
+    ];
+    await writeFile(file, JSON.stringify(legacy));
+    const ok = await attachVideoToHistory("old", 0, "/generated/2-1.mp4", file);
+    expect(ok).toBe(true);
+    const history = await readHistory(file);
+    expect(history[0].prompt).toBe("旧记录");
+    expect(history[0].images[0]).toEqual({
+      localUrl: "/generated/1-1.png",
+      remoteUrl: "https://x/1.png",
+      videoUrl: "/generated/2-1.mp4",
+    });
   });
 });

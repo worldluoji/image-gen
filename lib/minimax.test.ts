@@ -115,6 +115,7 @@ describe("parseResponse", () => {
       { name: "1004 鉴权失败", statusCode: 1004, wantMessageIncludes: "API Key" },
       { name: "1008 余额不足", statusCode: 1008, wantMessageIncludes: "余额" },
       { name: "1026 敏感内容", statusCode: 1026, wantMessageIncludes: "敏感" },
+      { name: "1027 输出敏感内容", statusCode: 1027, wantMessageIncludes: "敏感" },
       { name: "2013 参数异常", statusCode: 2013, wantMessageIncludes: "参数" },
       { name: "2049 无效 key", statusCode: 2049, wantMessageIncludes: "API Key" },
     ];

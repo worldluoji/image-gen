@@ -53,6 +53,7 @@ const STATUS_CODE_MESSAGES: Record<number, string> = {
   1004: "账号鉴权失败，请检查 API Key (MINIMAX_API_KEY) 是否正确",
   1008: "账号余额不足，请充值后重试",
   1026: "图片描述涉及敏感内容，请修改提示词",
+  1027: "生成内容涉及敏感信息，请调整描述后重试",
   2013: "传入参数异常，请检查入参",
   2049: "无效的 API Key，请检查 MINIMAX_API_KEY 配置",
 };
@@ -82,9 +83,21 @@ export interface GenerationResult {
   failedCount: number;
 }
 
-interface MiniMaxBaseResp {
+export interface MiniMaxBaseResp {
   status_code?: number;
   status_msg?: string;
+}
+
+/** base_resp.status_code 非 0 时返回映射为中文信息的 Error，正常时返回 null */
+export function baseRespError(baseResp: MiniMaxBaseResp | undefined): Error | null {
+  if (!baseResp || baseResp.status_code === 0) {
+    return null;
+  }
+  const code = baseResp.status_code as number;
+  const mapped = STATUS_CODE_MESSAGES[code];
+  return new Error(
+    mapped ?? `MiniMax 返回错误 (code=${code}): ${baseResp.status_msg ?? "未知错误"}`,
+  );
 }
 
 function validateSubjectReference(
@@ -169,13 +182,9 @@ export function parseResponse(json: unknown): GenerationResult {
     };
     base_resp?: MiniMaxBaseResp;
   };
-  const baseResp = resp.base_resp;
-  if (baseResp && baseResp.status_code !== 0) {
-    const code = baseResp.status_code;
-    const mapped = STATUS_CODE_MESSAGES[code as number];
-    throw new Error(
-      mapped ?? `MiniMax 返回错误 (code=${code}): ${baseResp.status_msg ?? "未知错误"}`,
-    );
+  const baseError = baseRespError(resp.base_resp);
+  if (baseError) {
+    throw baseError;
   }
   const imageUrls = resp.data?.image_urls;
   if (!imageUrls || imageUrls.length === 0) {

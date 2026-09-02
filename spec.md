@@ -7,3 +7,11 @@
   - 快速再创作：结果图「作为参考图」（服务端将本地文件转 Base64 传上游）、「再创作一批」（复用上一批参数）
   - 部分失败提示（成功 X 张 / 失败 Y 张）
   - 生成中按数量与宽高比显示骨架占位）
+- 4. 实现图生视频 ✅（已完成：
+  - 结果图「生成视频」按钮 + 弹窗（描述预填原图 prompt 可编辑，≤2000 字符；时长 6/10 秒、分辨率 768P/1080P，10 秒仅 768P，模型固定 MiniMax-Hailuo-2.3）
+  - 上游三接口封装 lib/video.ts：POST /v1/video_generation 创建任务、GET /v1/query/video_generation 查状态（Preparing/Queueing/Processing/Success/Fail）、GET /v1/files/retrieve 取下载链接
+  - 首帧本地落盘图转 Base64 Data URL 传上游；参数校验含时长-分辨率组合约束
+  - 前端轮询（5 秒间隔、15 分钟超时），服务端 Success 时立即下载落盘（download_url 仅 1 小时有效）并写入历史（HistoryEntry.images[].videoUrl，向后兼容旧记录）
+  - 历史区视频回放、结果区视频播放与下载
+  - 表格驱动单元测试（lib/video.test.ts + storage 视频扩展用例）
+  - README 与 spec 同步）

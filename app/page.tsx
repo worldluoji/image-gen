@@ -3,10 +3,16 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type ChangeEvent,
   type SubmitEvent,
 } from "react";
+import {
+  VIDEO_POLL_INTERVAL_MS,
+  VIDEO_POLL_TIMEOUT_MS,
+} from "@/lib/video";
+import { VideoDialog, type VideoSubmitRequest } from "./video-dialog";
 import {
   ASPECT_RATIOS,
   MODELS,
@@ -22,6 +28,14 @@ import {
 import type { GeneratedImage, HistoryEntry } from "@/lib/storage";
 
 const CUSTOM_STYLE = "自定义";
+
+interface VideoTask {
+  phase: "submitting" | "generating" | "done" | "error";
+  taskId?: string;
+  startedAt?: number;
+  videoUrl?: string;
+  error?: string;
+}
 
 interface GenerateRequest {
   prompt: string;
@@ -46,6 +60,9 @@ export default function Home() {
   const [failedCount, setFailedCount] = useState(0);
   const [lastRequest, setLastRequest] = useState<GenerateRequest | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [lastHistoryId, setLastHistoryId] = useState<string | null>(null);
+  const [dialogIndex, setDialogIndex] = useState<number | null>(null);
+  const [videoTasks, setVideoTasks] = useState<Record<number, VideoTask>>({});
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -113,6 +130,8 @@ export default function Home() {
       } else {
         setImages(data.images);
         setFailedCount(data.failedCount ?? 0);
+        setLastHistoryId(data.historyId ?? null);
+        setVideoTasks({});
         void refreshHistory();
       }
     } catch {
@@ -169,6 +188,98 @@ export default function Home() {
     }
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
+
+  function updateVideoTask(index: number, patch: VideoTask) {
+    setVideoTasks((prev) => ({ ...prev, [index]: patch }));
+  }
+
+  function handleVideoSubmit(req: VideoSubmitRequest) {
+    if (dialogIndex === null) {
+      return;
+    }
+    const index = dialogIndex;
+    updateVideoTask(index, { phase: "submitting" });
+    void (async () => {
+      try {
+        const res = await fetch("/api/video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageFile: images[index].localUrl, ...req }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          updateVideoTask(index, {
+            phase: "error",
+            error: data.error ?? `请求失败 (HTTP ${res.status})`,
+          });
+        } else {
+          updateVideoTask(index, {
+            phase: "generating",
+            taskId: data.taskId,
+            startedAt: Date.now(),
+          });
+          setDialogIndex(null);
+        }
+      } catch {
+        updateVideoTask(index, { phase: "error", error: "网络错误，请稍后重试" });
+      }
+    })();
+  }
+
+  const inflightRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    const generating = Object.values(videoTasks).some((t) => t.phase === "generating");
+    if (!generating || !lastHistoryId) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void (async () => {
+        for (const [key, task] of Object.entries(videoTasks)) {
+          if (task.phase !== "generating" || !task.taskId) {
+            continue;
+          }
+          const index = Number(key);
+          if (inflightRef.current.has(index)) {
+            continue;
+          }
+          if (task.startedAt && Date.now() - task.startedAt > VIDEO_POLL_TIMEOUT_MS) {
+            updateVideoTask(index, { phase: "error", error: "视频生成超时，请重试" });
+            continue;
+          }
+          inflightRef.current.add(index);
+          try {
+            const params = new URLSearchParams({
+              taskId: task.taskId,
+              historyId: lastHistoryId,
+              imageIndex: String(index),
+            });
+            const res = await fetch(`/api/video?${params}`);
+            const data = await res.json();
+            if (!res.ok) {
+              updateVideoTask(index, {
+                phase: "error",
+                error: data.error ?? `查询失败 (HTTP ${res.status})`,
+              });
+            } else if (data.status === "Success") {
+              updateVideoTask(index, { phase: "done", videoUrl: data.videoUrl });
+              void refreshHistory();
+            } else if (data.status === "Fail") {
+              updateVideoTask(index, {
+                phase: "error",
+                error: data.error ?? "视频生成失败",
+              });
+            }
+          } catch {
+            // 单次轮询网络异常忽略，由超时窗口兜底
+          } finally {
+            inflightRef.current.delete(index);
+          }
+        }
+      })();
+    }, VIDEO_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [videoTasks, lastHistoryId, refreshHistory]);
 
   const skeletonRatio = aspectRatio.replace(":", " / ");
 
@@ -346,21 +457,64 @@ export default function Home() {
                   alt={`生成图片 ${i + 1}`}
                   className="w-full rounded-lg border border-zinc-200 dark:border-zinc-800"
                 />
-                <figcaption className="flex gap-4 text-sm">
-                  <a
-                    href={img.localUrl}
-                    download={img.localUrl.split("/").pop()}
-                    className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                  >
-                    下载
-                  </a>
-                  <button
-                    type="button"
-                    onClick={() => handleUseAsReference(img.localUrl)}
-                    className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                  >
-                    作为参考图
-                  </button>
+                <figcaption className="flex flex-col gap-2 text-sm">
+                  <div className="flex gap-4">
+                    <a
+                      href={img.localUrl}
+                      download={img.localUrl.split("/").pop()}
+                      className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                    >
+                      下载
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handleUseAsReference(img.localUrl)}
+                      className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                    >
+                      作为参考图
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        videoTasks[i]?.phase === "submitting" ||
+                        videoTasks[i]?.phase === "generating"
+                      }
+                      onClick={() => {
+                        setError(null);
+                        setDialogIndex(i);
+                      }}
+                      className="text-zinc-600 underline hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
+                    >
+                      生成视频
+                    </button>
+                  </div>
+                  {videoTasks[i]?.phase === "submitting" && (
+                    <span className="text-zinc-500">提交中…</span>
+                  )}
+                  {videoTasks[i]?.phase === "generating" && (
+                    <span className="text-zinc-500">视频生成中，约需几分钟…</span>
+                  )}
+                  {videoTasks[i]?.phase === "error" && (
+                    <span className="text-red-600 dark:text-red-400">
+                      {videoTasks[i].error}
+                    </span>
+                  )}
+                  {videoTasks[i]?.phase === "done" && videoTasks[i].videoUrl && (
+                    <div className="flex flex-col gap-1">
+                      <video
+                        src={videoTasks[i].videoUrl}
+                        controls
+                        className="w-full rounded-lg border border-zinc-200 dark:border-zinc-800"
+                      />
+                      <a
+                        href={videoTasks[i].videoUrl}
+                        download={videoTasks[i].videoUrl!.split("/").pop()}
+                        className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                      >
+                        下载视频
+                      </a>
+                    </div>
+                  )}
                 </figcaption>
               </figure>
             ))}
@@ -398,27 +552,47 @@ export default function Home() {
               </div>
               <div className="flex flex-wrap gap-2">
                 {entry.images.map((img, i) => (
-                  <button
-                    key={`${entry.id}-${img.localUrl}-${i}`}
-                    type="button"
-                    onClick={() => handleUseAsReference(img.localUrl)}
-                    title="作为参考图"
-                    className="group relative"
-                  >
-                    <img
-                      src={img.localUrl}
-                      alt={`历史图片 ${i + 1}`}
-                      className="h-20 w-20 rounded-md border border-zinc-200 object-cover transition-opacity group-hover:opacity-80 dark:border-zinc-800"
-                    />
-                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-md bg-black/0 text-xs text-transparent transition-colors group-hover:bg-black/40 group-hover:text-white">
-                      作参考
-                    </span>
-                  </button>
+                  <div key={`${entry.id}-${img.localUrl}-${i}`} className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleUseAsReference(img.localUrl)}
+                      title="作为参考图"
+                      className="group relative"
+                    >
+                      <img
+                        src={img.localUrl}
+                        alt={`历史图片 ${i + 1}`}
+                        className="h-20 w-20 rounded-md border border-zinc-200 object-cover transition-opacity group-hover:opacity-80 dark:border-zinc-800"
+                      />
+                      <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-md bg-black/0 text-xs text-transparent transition-colors group-hover:bg-black/40 group-hover:text-white">
+                        作参考
+                      </span>
+                    </button>
+                    {img.videoUrl && (
+                      <video
+                        src={img.videoUrl}
+                        controls
+                        preload="none"
+                        title="生成的视频"
+                        className="h-20 w-20 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
+                      />
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
           ))}
         </section>
+      )}
+
+      {dialogIndex !== null && (
+        <VideoDialog
+          initialPrompt={lastRequest?.prompt ?? prompt}
+          submitting={videoTasks[dialogIndex]?.phase === "submitting"}
+          error={videoTasks[dialogIndex]?.phase === "error" ? videoTasks[dialogIndex].error ?? null : null}
+          onClose={() => setDialogIndex(null)}
+          onSubmit={handleVideoSubmit}
+        />
       )}
     </main>
   );

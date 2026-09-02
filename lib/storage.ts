@@ -20,9 +20,13 @@ const EXTENSION_MIME: Record<ImageExtension, string> = {
 // 严格匹配 <时间戳>-<序号>.<扩展名>，天然排除路径穿越与非法字符
 const GENERATED_FILE_RE = /^\/generated\/(\d+-\d+\.(?:png|jpe?g|webp))$/;
 
+export const GENERATED_VIDEO_EXTENSION = "mp4";
+
 export interface GeneratedImage {
   localUrl: string;
   remoteUrl: string;
+  /** 由本图生成的视频（本地落盘路径），重复生成则覆盖 */
+  videoUrl?: string;
 }
 
 export interface HistoryEntry {
@@ -60,7 +64,11 @@ export function toLocalImageName(
   return `${timestamp}-${index}.${extensionFromUrl(remoteUrl)}`;
 }
 
-export async function saveGeneratedImage(
+export function toLocalVideoName(index: number, timestamp: number): string {
+  return `${timestamp}-${index}.${GENERATED_VIDEO_EXTENSION}`;
+}
+
+export async function saveGeneratedFile(
   remoteUrl: string,
   fileName: string,
   generatedDir: string = GENERATED_DIR,
@@ -69,7 +77,7 @@ export async function saveGeneratedImage(
     const response = await fetch(remoteUrl, { cache: "no-store" });
     if (!response.ok) {
       console.error(
-        `下载生成图片失败 HTTP ${response.status}: ${remoteUrl}`,
+        `下载生成文件失败 HTTP ${response.status}: ${remoteUrl}`,
       );
       return false;
     }
@@ -78,7 +86,7 @@ export async function saveGeneratedImage(
     await writeFile(join(generatedDir, fileName), buffer);
     return true;
   } catch (err) {
-    console.error(`下载生成图片异常: ${remoteUrl}`, err);
+    console.error(`下载生成文件异常: ${remoteUrl}`, err);
     return false;
   }
 }
@@ -136,4 +144,25 @@ export async function appendHistory(
   await mkdir(join(historyFile, ".."), { recursive: true });
   await writeFile(historyFile, JSON.stringify(next, null, 2), "utf-8");
   return next;
+}
+
+/** 将视频 localUrl 挂到指定历史条目的指定图片上；找不到条目或序号越界时返回 false，不抛错 */
+export async function attachVideoToHistory(
+  historyId: string,
+  imageIndex: number,
+  videoLocalUrl: string,
+  historyFile: string = HISTORY_FILE,
+): Promise<boolean> {
+  const history = await readHistory(historyFile);
+  const entry = history.find((e) => e.id === historyId);
+  const image = entry?.images?.[imageIndex];
+  if (!entry || !image) {
+    console.warn(
+      `挂载视频到历史失败：条目 ${historyId} 或图片序号 ${imageIndex} 不存在（可能已被截断）`,
+    );
+    return false;
+  }
+  image.videoUrl = videoLocalUrl;
+  await writeFile(historyFile, JSON.stringify(history, null, 2), "utf-8");
+  return true;
 }
