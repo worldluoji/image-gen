@@ -36,6 +36,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# generated images & history (server-side persistence)
+/public/generated
+/data
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
