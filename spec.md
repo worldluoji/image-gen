@@ -15,3 +15,8 @@
   - 历史区视频回放、结果区视频播放与下载
   - 表格驱动单元测试（lib/video.test.ts + storage 视频扩展用例）
   - README 与 spec 同步）
+- 5. 产品体验优化 ✅（已完成：
+  - 风格选择可视化：16 预设风格由纯文字下拉改为带示例图的卡片网格，点选切换，保留「无」「自定义」；样图按 STYLE_PRESETS 索引命名（/styles/<i>.png），由 scripts/gen-style-samples.mts 一次性预生成入库 public/styles/；lib/minimax.ts 导出 STYLE_SAMPLE_IMAGES 作为单一事实来源
+  - 图片放大灯箱：新增 app/lightbox.tsx（零依赖），结果图与历史缩略图点击打开，←/→/ESC 键盘导航、背景点击关闭，灯箱内提供「作为参考图」「下载」；历史缩略图点击语义由「作参考」改为放大，作参考动作移入灯箱
+  - 图生视频任务刷新恢复：GeneratedImage 增 pendingVideo{taskId,startedAt}；POST /api/video 接收 historyId/imageIndex 前置校验并在创建成功后挂载、Success 挂载视频时清除、Fail 时清除；前端轮询键改为 `${historyId}:${imageIndex}` 复合键，activeVideoTasks 以 useMemo 从历史 pendingVideo 派生并与本机状态合并（本机优先），刷新后自动续轮询；历史区显示「视频生成中…」占位徽标；顺带修复新批次生成会清空旧批次视频状态的既有 bug（删除 setVideoTasks({})）
+  - 测试先行：lib/storage.test.ts 新增 attachVideoTaskToHistory / clearVideoTaskFromHistory / 挂载清 pendingVideo 表格用例；lib/minimax.test.ts 新增 STYLE_SAMPLE_IMAGES 索引映射与 ASCII 文件名用例；tsconfig 启用 allowImportingTsExtensions 以支持 Node 22 原生运行 .mts 脚本）

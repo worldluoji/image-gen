@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -13,6 +14,7 @@ import {
   VIDEO_POLL_TIMEOUT_MS,
 } from "@/lib/video";
 import { VideoDialog, type VideoSubmitRequest } from "./video-dialog";
+import { Lightbox } from "./lightbox";
 import {
   ASPECT_RATIOS,
   MODELS,
@@ -22,6 +24,7 @@ import {
   REFERENCE_MAX_BYTES,
   STYLE_MAX_LENGTH,
   STYLE_PRESETS,
+  STYLE_SAMPLE_IMAGES,
   type AspectRatio,
   type Model,
 } from "@/lib/minimax";
@@ -31,10 +34,17 @@ const CUSTOM_STYLE = "自定义";
 
 interface VideoTask {
   phase: "submitting" | "generating" | "done" | "error";
+  historyId: string;
+  imageIndex: number;
   taskId?: string;
   startedAt?: number;
   videoUrl?: string;
   error?: string;
+}
+
+// 视频任务以「历史条目:图片序号」为键，刷新后可从历史播种恢复，多批次互不覆盖
+function videoKey(historyId: string, imageIndex: number): string {
+  return `${historyId}:${imageIndex}`;
 }
 
 interface GenerateRequest {
@@ -62,7 +72,11 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [lastHistoryId, setLastHistoryId] = useState<string | null>(null);
   const [dialogIndex, setDialogIndex] = useState<number | null>(null);
-  const [videoTasks, setVideoTasks] = useState<Record<number, VideoTask>>({});
+  const [lightbox, setLightbox] = useState<{
+    images: GeneratedImage[];
+    index: number;
+  } | null>(null);
+  const [videoTasks, setVideoTasks] = useState<Record<string, VideoTask>>({});
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -131,7 +145,6 @@ export default function Home() {
         setImages(data.images);
         setFailedCount(data.failedCount ?? 0);
         setLastHistoryId(data.historyId ?? null);
-        setVideoTasks({});
         void refreshHistory();
       }
     } catch {
@@ -189,83 +202,120 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function updateVideoTask(index: number, patch: VideoTask) {
-    setVideoTasks((prev) => ({ ...prev, [index]: patch }));
+  function updateVideoTask(key: string, patch: VideoTask) {
+    setVideoTasks((prev) => ({ ...prev, [key]: patch }));
   }
 
+  // 进行中的视频任务 = 历史里的 pendingVideo ∪ 本机交互状态；本机状态优先，
+  // 因此刷新后能恢复轮询，而本机已有的 done/error 不被覆盖
+  const activeVideoTasks = useMemo(() => {
+    const derived: Record<string, VideoTask> = {};
+    for (const entry of history) {
+      entry.images.forEach((img, i) => {
+        if (img.pendingVideo && !img.videoUrl) {
+          derived[videoKey(entry.id, i)] = {
+            phase: "generating",
+            historyId: entry.id,
+            imageIndex: i,
+            taskId: img.pendingVideo.taskId,
+            startedAt: img.pendingVideo.startedAt,
+          };
+        }
+      });
+    }
+    return { ...derived, ...videoTasks };
+  }, [history, videoTasks]);
+
   function handleVideoSubmit(req: VideoSubmitRequest) {
-    if (dialogIndex === null) {
+    if (dialogIndex === null || !lastHistoryId) {
       return;
     }
-    const index = dialogIndex;
-    updateVideoTask(index, { phase: "submitting" });
+    const historyId = lastHistoryId;
+    const imageIndex = dialogIndex;
+    const key = videoKey(historyId, imageIndex);
+    updateVideoTask(key, { phase: "submitting", historyId, imageIndex });
     void (async () => {
       try {
         const res = await fetch("/api/video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageFile: images[index].localUrl, ...req }),
+          body: JSON.stringify({
+            imageFile: images[imageIndex].localUrl,
+            historyId,
+            imageIndex,
+            ...req,
+          }),
         });
         const data = await res.json();
         if (!res.ok) {
-          updateVideoTask(index, {
+          updateVideoTask(key, {
             phase: "error",
+            historyId,
+            imageIndex,
             error: data.error ?? `请求失败 (HTTP ${res.status})`,
           });
         } else {
-          updateVideoTask(index, {
+          updateVideoTask(key, {
             phase: "generating",
+            historyId,
+            imageIndex,
             taskId: data.taskId,
             startedAt: Date.now(),
           });
           setDialogIndex(null);
         }
       } catch {
-        updateVideoTask(index, { phase: "error", error: "网络错误，请稍后重试" });
+        updateVideoTask(key, {
+          phase: "error",
+          historyId,
+          imageIndex,
+          error: "网络错误，请稍后重试",
+        });
       }
     })();
   }
 
-  const inflightRef = useRef<Set<number>>(new Set());
+  const inflightRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    const generating = Object.values(videoTasks).some((t) => t.phase === "generating");
-    if (!generating || !lastHistoryId) {
+    const generating = Object.values(activeVideoTasks).some((t) => t.phase === "generating");
+    if (!generating) {
       return;
     }
     const timer = setInterval(() => {
       void (async () => {
-        for (const [key, task] of Object.entries(videoTasks)) {
+        for (const [key, task] of Object.entries(activeVideoTasks)) {
           if (task.phase !== "generating" || !task.taskId) {
             continue;
           }
-          const index = Number(key);
-          if (inflightRef.current.has(index)) {
+          if (inflightRef.current.has(key)) {
             continue;
           }
           if (task.startedAt && Date.now() - task.startedAt > VIDEO_POLL_TIMEOUT_MS) {
-            updateVideoTask(index, { phase: "error", error: "视频生成超时，请重试" });
+            updateVideoTask(key, { ...task, phase: "error", error: "视频生成超时，请重试" });
             continue;
           }
-          inflightRef.current.add(index);
+          inflightRef.current.add(key);
           try {
             const params = new URLSearchParams({
               taskId: task.taskId,
-              historyId: lastHistoryId,
-              imageIndex: String(index),
+              historyId: task.historyId,
+              imageIndex: String(task.imageIndex),
             });
             const res = await fetch(`/api/video?${params}`);
             const data = await res.json();
             if (!res.ok) {
-              updateVideoTask(index, {
+              updateVideoTask(key, {
+                ...task,
                 phase: "error",
                 error: data.error ?? `查询失败 (HTTP ${res.status})`,
               });
             } else if (data.status === "Success") {
-              updateVideoTask(index, { phase: "done", videoUrl: data.videoUrl });
+              updateVideoTask(key, { ...task, phase: "done", videoUrl: data.videoUrl });
               void refreshHistory();
             } else if (data.status === "Fail") {
-              updateVideoTask(index, {
+              updateVideoTask(key, {
+                ...task,
                 phase: "error",
                 error: data.error ?? "视频生成失败",
               });
@@ -273,15 +323,19 @@ export default function Home() {
           } catch {
             // 单次轮询网络异常忽略，由超时窗口兜底
           } finally {
-            inflightRef.current.delete(index);
+            inflightRef.current.delete(key);
           }
         }
       })();
     }, VIDEO_POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [videoTasks, lastHistoryId, refreshHistory]);
+  }, [activeVideoTasks, refreshHistory]);
 
   const skeletonRatio = aspectRatio.replace(":", " / ");
+  const dialogTask =
+    dialogIndex !== null && lastHistoryId
+      ? activeVideoTasks[videoKey(lastHistoryId, dialogIndex)]
+      : undefined;
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-12">
@@ -342,22 +396,86 @@ export default function Home() {
             />
           </label>
 
-          <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
-            风格
-            <select
-              value={styleChoice}
-              onChange={(e) => setStyleChoice(e.target.value)}
-              className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
-            >
-              <option value="">无</option>
-              {STYLE_PRESETS.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-              <option value={CUSTOM_STYLE}>{CUSTOM_STYLE}</option>
-            </select>
-          </label>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <span className="text-sm text-zinc-700 dark:text-zinc-300">风格</span>
+          <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+            {STYLE_PRESETS.map((s, i) => {
+              const selected = styleChoice === s;
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setStyleChoice(selected ? "" : s)}
+                  aria-pressed={selected}
+                  className={`flex flex-col gap-1 rounded-lg border p-1 transition-colors ${
+                    selected
+                      ? "border-black dark:border-white"
+                      : "border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                  }`}
+                >
+                  <img
+                    src={STYLE_SAMPLE_IMAGES[i]}
+                    alt={`${s}风格示例`}
+                    loading="lazy"
+                    className="aspect-square w-full rounded-md object-cover"
+                  />
+                  <span
+                    className={`truncate text-center text-xs ${
+                      selected
+                        ? "font-medium text-black dark:text-white"
+                        : "text-zinc-600 dark:text-zinc-400"
+                    }`}
+                  >
+                    {s}
+                  </span>
+                </button>
+              );
+            })}
+            {(
+              [
+                { value: "", label: "无" },
+                { value: CUSTOM_STYLE, label: CUSTOM_STYLE },
+              ] as const
+            ).map((chip) => {
+              const selected = styleChoice === chip.value;
+              return (
+                <button
+                  key={chip.label}
+                  type="button"
+                  onClick={() =>
+                    setStyleChoice(selected ? "" : chip.value)
+                  }
+                  aria-pressed={selected}
+                  className={`flex flex-col gap-1 rounded-lg border p-1 transition-colors ${
+                    selected
+                      ? "border-black dark:border-white"
+                      : "border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                  }`}
+                >
+                  <span
+                    className={`flex aspect-square w-full items-center justify-center rounded-md border border-dashed text-sm ${
+                      selected
+                        ? "border-black bg-zinc-100 dark:border-white dark:bg-zinc-800"
+                        : "border-zinc-300 dark:border-zinc-700"
+                    }`}
+                  >
+                    {chip.label === CUSTOM_STYLE ? "✎" : "—"}
+                  </span>
+                  <span
+                    className={`truncate text-center text-xs ${
+                      selected
+                        ? "font-medium text-black dark:text-white"
+                        : "text-zinc-600 dark:text-zinc-400"
+                    }`}
+                  >
+                    {chip.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {styleChoice === CUSTOM_STYLE && (
@@ -450,12 +568,17 @@ export default function Home() {
             </button>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {images.map((img, i) => (
+            {images.map((img, i) => {
+              const task = lastHistoryId
+                ? activeVideoTasks[videoKey(lastHistoryId, i)]
+                : undefined;
+              return (
               <figure key={`${img.localUrl}-${i}`} className="flex flex-col gap-2">
                 <img
                   src={img.localUrl}
                   alt={`生成图片 ${i + 1}`}
-                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-800"
+                  onClick={() => setLightbox({ images, index: i })}
+                  className="w-full cursor-zoom-in rounded-lg border border-zinc-200 dark:border-zinc-800"
                 />
                 <figcaption className="flex flex-col gap-2 text-sm">
                   <div className="flex gap-4">
@@ -476,8 +599,8 @@ export default function Home() {
                     <button
                       type="button"
                       disabled={
-                        videoTasks[i]?.phase === "submitting" ||
-                        videoTasks[i]?.phase === "generating"
+                        task?.phase === "submitting" ||
+                        task?.phase === "generating"
                       }
                       onClick={() => {
                         setError(null);
@@ -488,27 +611,25 @@ export default function Home() {
                       生成视频
                     </button>
                   </div>
-                  {videoTasks[i]?.phase === "submitting" && (
+                  {task?.phase === "submitting" && (
                     <span className="text-zinc-500">提交中…</span>
                   )}
-                  {videoTasks[i]?.phase === "generating" && (
+                  {task?.phase === "generating" && (
                     <span className="text-zinc-500">视频生成中，约需几分钟…</span>
                   )}
-                  {videoTasks[i]?.phase === "error" && (
-                    <span className="text-red-600 dark:text-red-400">
-                      {videoTasks[i].error}
-                    </span>
+                  {task?.phase === "error" && (
+                    <span className="text-red-600 dark:text-red-400">{task.error}</span>
                   )}
-                  {videoTasks[i]?.phase === "done" && videoTasks[i].videoUrl && (
+                  {task?.phase === "done" && task.videoUrl && (
                     <div className="flex flex-col gap-1">
                       <video
-                        src={videoTasks[i].videoUrl}
+                        src={task.videoUrl}
                         controls
                         className="w-full rounded-lg border border-zinc-200 dark:border-zinc-800"
                       />
                       <a
-                        href={videoTasks[i].videoUrl}
-                        download={videoTasks[i].videoUrl!.split("/").pop()}
+                        href={task.videoUrl}
+                        download={task.videoUrl.split("/").pop()}
                         className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
                       >
                         下载视频
@@ -517,7 +638,8 @@ export default function Home() {
                   )}
                 </figcaption>
               </figure>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -555,18 +677,17 @@ export default function Home() {
                   <div key={`${entry.id}-${img.localUrl}-${i}`} className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => handleUseAsReference(img.localUrl)}
-                      title="作为参考图"
+                      onClick={() =>
+                        setLightbox({ images: entry.images, index: i })
+                      }
+                      title="点击放大"
                       className="group relative"
                     >
                       <img
                         src={img.localUrl}
                         alt={`历史图片 ${i + 1}`}
-                        className="h-20 w-20 rounded-md border border-zinc-200 object-cover transition-opacity group-hover:opacity-80 dark:border-zinc-800"
+                        className="h-20 w-20 cursor-zoom-in rounded-md border border-zinc-200 object-cover transition-opacity group-hover:opacity-80 dark:border-zinc-800"
                       />
-                      <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-md bg-black/0 text-xs text-transparent transition-colors group-hover:bg-black/40 group-hover:text-white">
-                        作参考
-                      </span>
                     </button>
                     {img.videoUrl && (
                       <video
@@ -577,6 +698,11 @@ export default function Home() {
                         className="h-20 w-20 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
                       />
                     )}
+                    {!img.videoUrl && img.pendingVideo && (
+                      <span className="flex h-20 w-20 animate-pulse items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 p-1 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+                        视频生成中…
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -585,11 +711,24 @@ export default function Home() {
         </section>
       )}
 
+      {lightbox && (
+        <Lightbox
+          images={lightbox.images}
+          index={lightbox.index}
+          onIndexChange={(index) => setLightbox({ ...lightbox, index })}
+          onClose={() => setLightbox(null)}
+          onUseAsReference={(url) => {
+            handleUseAsReference(url);
+            setLightbox(null);
+          }}
+        />
+      )}
+
       {dialogIndex !== null && (
         <VideoDialog
           initialPrompt={lastRequest?.prompt ?? prompt}
-          submitting={videoTasks[dialogIndex]?.phase === "submitting"}
-          error={videoTasks[dialogIndex]?.phase === "error" ? videoTasks[dialogIndex].error ?? null : null}
+          submitting={dialogTask?.phase === "submitting"}
+          error={dialogTask?.phase === "error" ? dialogTask.error ?? null : null}
           onClose={() => setDialogIndex(null)}
           onSubmit={handleVideoSubmit}
         />

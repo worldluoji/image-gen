@@ -22,11 +22,18 @@ const GENERATED_FILE_RE = /^\/generated\/(\d+-\d+\.(?:png|jpe?g|webp))$/;
 
 export const GENERATED_VIDEO_EXTENSION = "mp4";
 
+export interface PendingVideoTask {
+  taskId: string;
+  startedAt: number;
+}
+
 export interface GeneratedImage {
   localUrl: string;
   remoteUrl: string;
   /** 由本图生成的视频（本地落盘路径），重复生成则覆盖 */
   videoUrl?: string;
+  /** 进行中的视频任务，成功后被清除；用于刷新页面后恢复轮询 */
+  pendingVideo?: PendingVideoTask;
 }
 
 export interface HistoryEntry {
@@ -146,23 +153,79 @@ export async function appendHistory(
   return next;
 }
 
-/** 将视频 localUrl 挂到指定历史条目的指定图片上；找不到条目或序号越界时返回 false，不抛错 */
+/** 找到指定历史条目的指定图片并修改，命中才写回文件；找不到或序号非法时返回 false，不抛错 */
+async function mutateHistoryImage(
+  historyId: string,
+  imageIndex: number,
+  historyFile: string,
+  mutate: (image: GeneratedImage) => void,
+  warnOnMiss: string,
+): Promise<boolean> {
+  const history = await readHistory(historyFile);
+  const entry = history.find((e) => e.id === historyId);
+  const image =
+    Number.isInteger(imageIndex) && imageIndex >= 0
+      ? entry?.images?.[imageIndex]
+      : undefined;
+  if (!image) {
+    console.warn(`${warnOnMiss}：条目 ${historyId} 或图片序号 ${imageIndex} 不存在（可能已被截断）`);
+    return false;
+  }
+  mutate(image);
+  await writeFile(historyFile, JSON.stringify(history, null, 2), "utf-8");
+  return true;
+}
+
+/** 将视频 localUrl 挂到指定历史条目的指定图片上，并清除其 pendingVideo */
 export async function attachVideoToHistory(
   historyId: string,
   imageIndex: number,
   videoLocalUrl: string,
   historyFile: string = HISTORY_FILE,
 ): Promise<boolean> {
-  const history = await readHistory(historyFile);
-  const entry = history.find((e) => e.id === historyId);
-  const image = entry?.images?.[imageIndex];
-  if (!entry || !image) {
-    console.warn(
-      `挂载视频到历史失败：条目 ${historyId} 或图片序号 ${imageIndex} 不存在（可能已被截断）`,
-    );
-    return false;
-  }
-  image.videoUrl = videoLocalUrl;
-  await writeFile(historyFile, JSON.stringify(history, null, 2), "utf-8");
-  return true;
+  return mutateHistoryImage(
+    historyId,
+    imageIndex,
+    historyFile,
+    (image) => {
+      image.videoUrl = videoLocalUrl;
+      delete image.pendingVideo;
+    },
+    "挂载视频到历史失败",
+  );
+}
+
+/** 将进行中的视频任务挂到指定历史条目的指定图片上，供前端刷新后恢复轮询 */
+export async function attachVideoTaskToHistory(
+  historyId: string,
+  imageIndex: number,
+  task: PendingVideoTask,
+  historyFile: string = HISTORY_FILE,
+): Promise<boolean> {
+  return mutateHistoryImage(
+    historyId,
+    imageIndex,
+    historyFile,
+    (image) => {
+      image.pendingVideo = task;
+    },
+    "挂载视频任务到历史失败",
+  );
+}
+
+/** 清除指定历史条目图片上的 pendingVideo（任务失败时调用） */
+export async function clearVideoTaskFromHistory(
+  historyId: string,
+  imageIndex: number,
+  historyFile: string = HISTORY_FILE,
+): Promise<boolean> {
+  return mutateHistoryImage(
+    historyId,
+    imageIndex,
+    historyFile,
+    (image) => {
+      delete image.pendingVideo;
+    },
+    "清除历史视频任务失败",
+  );
 }

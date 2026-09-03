@@ -5,6 +5,8 @@ import {
   PROMPT_MAX_LENGTH,
   REFERENCE_MAX_BYTES,
   STYLE_MAX_LENGTH,
+  STYLE_PRESETS,
+  STYLE_SAMPLE_IMAGES,
   buildRequestBody,
   parseResponse,
   validateParams,
@@ -20,6 +22,21 @@ function makeParams(overrides: Partial<GenerationParams> = {}): GenerationParams
     ...overrides,
   };
 }
+
+describe("STYLE_SAMPLE_IMAGES", () => {
+  it("与 STYLE_PRESETS 数量一致且按索引顺序一一对应", () => {
+    expect(STYLE_SAMPLE_IMAGES).toHaveLength(STYLE_PRESETS.length);
+    STYLE_SAMPLE_IMAGES.forEach((url, i) => {
+      expect(url).toBe(`/styles/${i}.png`);
+    });
+  });
+
+  it("路径为纯 ASCII，避免中文文件名编码问题", () => {
+    for (const url of STYLE_SAMPLE_IMAGES) {
+      expect(url).toMatch(/^\/styles\/\d+\.png$/);
+    }
+  });
+});
 
 describe("buildRequestBody", () => {
   const cases = [

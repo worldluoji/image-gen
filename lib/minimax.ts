@@ -39,6 +39,11 @@ export const STYLE_PRESETS = [
   "概念艺术",
 ] as const;
 export type StylePreset = (typeof STYLE_PRESETS)[number];
+// 与 STYLE_PRESETS 按索引一一对应的示例图（由 scripts/gen-style-samples.ts 预生成入库）；
+// 改动 STYLE_PRESETS 顺序或内容后需重跑该脚本
+export const STYLE_SAMPLE_IMAGES = STYLE_PRESETS.map(
+  (_, i) => `/styles/${i}.png`,
+);
 export const STYLE_MAX_LENGTH = 100;
 const STYLE_PROMPT_PREFIX = "。画面风格：";
 

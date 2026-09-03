@@ -10,7 +10,9 @@ import {
   type VideoTaskParams,
 } from "@/lib/video";
 import {
+  attachVideoTaskToHistory,
   attachVideoToHistory,
+  clearVideoTaskFromHistory,
   isLocalGeneratedPath,
   localReferenceToDataUrl,
   saveGeneratedFile,
@@ -22,6 +24,8 @@ interface VideoRequestBody {
   prompt: string;
   duration: VideoDuration;
   resolution: VideoResolution;
+  historyId: string;
+  imageIndex: number;
 }
 
 function upstreamError(err: unknown): NextResponse {
@@ -64,6 +68,15 @@ export async function POST(request: Request) {
   if (invalid) {
     return NextResponse.json({ error: invalid }, { status: 400 });
   }
+  if (!raw.historyId) {
+    return NextResponse.json({ error: "缺少 historyId 参数" }, { status: 400 });
+  }
+  if (!Number.isInteger(raw.imageIndex) || (raw.imageIndex ?? -1) < 0) {
+    return NextResponse.json(
+      { error: "imageIndex 必须是非负整数" },
+      { status: 400 },
+    );
+  }
 
   const apiKey = process.env.MINIMAX_API_KEY;
   if (!apiKey) {
@@ -75,6 +88,14 @@ export async function POST(request: Request) {
 
   try {
     const taskId = await createVideoTask(params, apiKey);
+    // 持久化进行中任务供刷新恢复；挂载失败（如条目被截断）不影响本次任务创建
+    const attached = await attachVideoTaskToHistory(raw.historyId, raw.imageIndex!, {
+      taskId,
+      startedAt: Date.now(),
+    });
+    if (!attached) {
+      console.warn("视频任务已创建但未能挂载到历史，刷新后将无法恢复轮询");
+    }
     return NextResponse.json({ taskId });
   } catch (err) {
     return upstreamError(err);
@@ -114,6 +135,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ status: result.status });
     }
     if (result.status === "Fail") {
+      await clearVideoTaskFromHistory(historyId, imageIndex);
       return NextResponse.json({
         status: "Fail",
         error: "视频生成失败，请调整描述后重试",

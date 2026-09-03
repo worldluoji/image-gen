@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   HISTORY_MAX_ENTRIES,
   appendHistory,
+  attachVideoTaskToHistory,
   attachVideoToHistory,
+  clearVideoTaskFromHistory,
   isLocalGeneratedPath,
   localReferenceToDataUrl,
   readHistory,
@@ -300,5 +302,166 @@ describe("attachVideoToHistory", () => {
       remoteUrl: "https://x/1.png",
       videoUrl: "/generated/2-1.mp4",
     });
+  });
+
+  it("挂载成功视频时清除 pendingVideo", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    await attachVideoTaskToHistory(
+      "h1",
+      0,
+      { taskId: "t1", startedAt: 1 },
+      file,
+    );
+    const ok = await attachVideoToHistory("h1", 0, "/generated/2-1.mp4", file);
+    expect(ok).toBe(true);
+    const history = await readHistory(file);
+    expect(history[0].images[0].videoUrl).toBe("/generated/2-1.mp4");
+    expect(history[0].images[0].pendingVideo).toBeUndefined();
+  });
+});
+
+describe("attachVideoTaskToHistory", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "image-gen-task-"));
+    file = join(dir, "history.json");
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const cases: {
+    name: string;
+    entry: HistoryEntry;
+    historyId: string;
+    imageIndex: number;
+    want: boolean;
+    before?: () => Promise<unknown>;
+    check?: () => Promise<void>;
+  }[] = [
+    {
+      name: "正常写入 pendingVideo 并可读回",
+      entry: makeEntry({
+        id: "h1",
+        images: [
+          { localUrl: "/generated/1-1.png", remoteUrl: "https://x/1.png" },
+          { localUrl: "/generated/1-2.png", remoteUrl: "https://x/2.png" },
+        ],
+      }),
+      historyId: "h1",
+      imageIndex: 1,
+      want: true,
+      check: async () => {
+        const history = await readHistory(file);
+        expect(history[0].images[1].pendingVideo).toEqual({
+          taskId: "task-1",
+          startedAt: 12345,
+        });
+        expect(history[0].images[0].pendingVideo).toBeUndefined();
+      },
+    },
+    {
+      name: "同图二次挂载覆盖旧 pendingVideo",
+      entry: makeEntry({ id: "h1" }),
+      historyId: "h1",
+      imageIndex: 0,
+      want: true,
+      before: () =>
+        attachVideoTaskToHistory("h1", 0, { taskId: "old", startedAt: 1 }, file),
+      check: async () => {
+        const history = await readHistory(file);
+        expect(history[0].images[0].pendingVideo).toEqual({
+          taskId: "task-1",
+          startedAt: 12345,
+        });
+      },
+    },
+    {
+      name: "historyId 不存在时返回 false",
+      entry: makeEntry({ id: "h1" }),
+      historyId: "missing",
+      imageIndex: 0,
+      want: false,
+      check: async () => {
+        const history = await readHistory(file);
+        expect(history[0].images[0].pendingVideo).toBeUndefined();
+      },
+    },
+    {
+      name: "imageIndex 越界时返回 false",
+      entry: makeEntry({ id: "h1" }),
+      historyId: "h1",
+      imageIndex: 5,
+      want: false,
+    },
+    {
+      name: "imageIndex 非法（负数/非整数）时返回 false",
+      entry: makeEntry({ id: "h1" }),
+      historyId: "h1",
+      imageIndex: -1,
+      want: false,
+    },
+  ];
+  for (const c of cases) {
+    it(c.name, async () => {
+      await appendHistory(c.entry, file, 50);
+      if (c.before) {
+        await c.before();
+      }
+      const ok = await attachVideoTaskToHistory(
+        c.historyId,
+        c.imageIndex,
+        { taskId: "task-1", startedAt: 12345 },
+        file,
+      );
+      expect(ok).toBe(c.want);
+      if (c.check) {
+        await c.check();
+      }
+    });
+  }
+});
+
+describe("clearVideoTaskFromHistory", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "image-gen-clear-"));
+    file = join(dir, "history.json");
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("清除指定图片的 pendingVideo，保留其他字段", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    await attachVideoTaskToHistory("h1", 0, { taskId: "t1", startedAt: 1 }, file);
+    const ok = await clearVideoTaskFromHistory("h1", 0, file);
+    expect(ok).toBe(true);
+    const history = await readHistory(file);
+    expect(history[0].images[0].pendingVideo).toBeUndefined();
+    expect(history[0].images[0].localUrl).toBe("/generated/1.png");
+  });
+
+  it("无 pendingVideo 时调用不报错且幂等", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    const before = await readHistory(file);
+    expect(await clearVideoTaskFromHistory("h1", 0, file)).toBe(true);
+    expect(await readHistory(file)).toEqual(before);
+  });
+
+  it("historyId 不存在时返回 false", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    expect(await clearVideoTaskFromHistory("missing", 0, file)).toBe(false);
+  });
+
+  it("imageIndex 越界时返回 false", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    expect(await clearVideoTaskFromHistory("h1", 3, file)).toBe(false);
   });
 });
