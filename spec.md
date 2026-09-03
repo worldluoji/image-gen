@@ -40,3 +40,9 @@
   - page.tsx：dialogOtherImages 从 history 按 dialogTarget 派生（结果批次生成后即入历史，统一数据源）；删除 current 批次后关闭弹窗（修复 25b4bdc 遗留的 setDialogIndex 笔误致类型错误）
   - 测试先行：buildVideoRequestBody 尾帧 3 例（切模型/透传 data URL/空串省略）+ validateVideoParams 尾帧 4 例（合法/空串/本地路径拒/非图 data URL 拒）
   - 已知边界：上传尾帧的 Data URL 仅存于内存 req，刷新后就地重试不含尾帧（历史路径尾帧不受影响）；README 同步）
+- 9. 移动端响应式适配 ✅（已完成：
+  - viewport 由 Next 16 自动注入（width=device-width, initial-scale=1），无需手写 meta；布局问题集中在窄屏间距/换行/弹窗溢出
+  - layout.tsx：lang 改 zh-CN；metadata title/description 改为真实项目名；新增 `viewport.themeColor`（light #ffffff / dark #0a0a0a，对齐 globals.css --background）
+  - page.tsx：主容器 px-6 py-12 → px-4 py-8 sm:px-6 sm:py-12（窄屏收紧内边距）；历史卡片头部改 flex-wrap、prompt 文本块 flex-1 basis-full sm:basis-auto，使「收藏/载入参数/删除」按钮组窄屏整体换行至描述下方而非挤压描述
+  - video-dialog.tsx：弹窗内层加 max-h-[90dvh] overflow-y-auto，矮屏可滚动不溢出；lightbox.tsx：图片与容器 max-h 由 vh 改 dvh（规避移动端地址栏高度变化），底部控件行 flex-wrap justify-center 防横向溢出
+  - 纯 CSS/Tailwind utility 改动，无逻辑单元、无新增依赖，不新增单测（宪法第 2 条针对功能/Bug 逻辑，样式改动不适用）；README 同步）

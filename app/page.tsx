@@ -478,7 +478,7 @@ export default function Home() {
   }, [history, dialogTarget]);
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-12">
+    <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-12">
       <h1 className="text-2xl font-semibold tracking-tight">
         AI 文生图 <span className="text-base font-normal text-zinc-500">MiniMax</span>
       </h1>
@@ -880,8 +880,8 @@ export default function Home() {
               key={entry.id}
               className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
             >
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex min-w-0 flex-col gap-0.5">
+              <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+                <div className="flex min-w-0 flex-1 basis-full flex-col gap-0.5 sm:basis-auto">
                   <span className="truncate text-sm text-zinc-800 dark:text-zinc-200">
                     {entry.prompt}
                   </span>

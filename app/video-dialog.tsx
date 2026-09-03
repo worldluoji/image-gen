@@ -82,7 +82,7 @@ export function VideoDialog({
       onClick={onClose}
     >
       <div
-        className="flex w-full max-w-md flex-col gap-4 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-700 dark:bg-zinc-900"
+        className="flex max-h-[90dvh] w-full max-w-md flex-col gap-4 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-700 dark:bg-zinc-900"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">

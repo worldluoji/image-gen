@@ -51,7 +51,7 @@ export function Lightbox({
       onClick={onClose}
     >
       <div
-        className="flex max-h-[80vh] max-w-full items-center"
+        className="flex max-h-[80dvh] max-w-full items-center"
         onClick={(e) => e.stopPropagation()}
       >
         {total > 1 && (
@@ -67,7 +67,7 @@ export function Lightbox({
         <img
           src={image.localUrl}
           alt={`预览 ${index + 1}`}
-          className="max-h-[80vh] max-w-[90vw] rounded-lg object-contain"
+          className="max-h-[80dvh] max-w-[90vw] rounded-lg object-contain"
         />
         {total > 1 && (
           <button
@@ -82,7 +82,7 @@ export function Lightbox({
       </div>
 
       <div
-        className="flex items-center gap-4 text-sm"
+        className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-sm"
         onClick={(e) => e.stopPropagation()}
       >
         <span className="text-zinc-400">
