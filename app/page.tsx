@@ -76,7 +76,12 @@ export default function Home() {
   const [lastRequest, setLastRequest] = useState<GenerateRequest | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [lastHistoryId, setLastHistoryId] = useState<string | null>(null);
-  const [dialogIndex, setDialogIndex] = useState<number | null>(null);
+  const [dialogTarget, setDialogTarget] = useState<{
+    historyId: string;
+    imageIndex: number;
+    imageFile: string;
+    prompt: string;
+  } | null>(null);
   const [lightbox, setLightbox] = useState<{
     images: GeneratedImage[];
     index: number;
@@ -362,7 +367,7 @@ export default function Home() {
             taskId: data.taskId,
             startedAt: Date.now(),
           });
-          setDialogIndex(null);
+          setDialogTarget(null);
         }
       } catch {
         updateVideoTask(key, {
@@ -377,10 +382,15 @@ export default function Home() {
   }
 
   function handleVideoSubmit(req: VideoSubmitRequest) {
-    if (dialogIndex === null || !lastHistoryId) {
+    if (!dialogTarget) {
       return;
     }
-    submitVideoTask(lastHistoryId, dialogIndex, req, images[dialogIndex].localUrl);
+    submitVideoTask(
+      dialogTarget.historyId,
+      dialogTarget.imageIndex,
+      req,
+      dialogTarget.imageFile,
+    );
   }
 
   const inflightRef = useRef<Set<string>>(new Set());
@@ -450,10 +460,9 @@ export default function Home() {
     [history],
   );
   const skeletonRatio = aspectRatio.replace(":", " / ");
-  const dialogTask =
-    dialogIndex !== null && lastHistoryId
-      ? activeVideoTasks[videoKey(lastHistoryId, dialogIndex)]
-      : undefined;
+  const dialogTask = dialogTarget
+    ? activeVideoTasks[videoKey(dialogTarget.historyId, dialogTarget.imageIndex)]
+    : undefined;
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-12">
@@ -780,8 +789,17 @@ export default function Home() {
                         task?.phase === "generating"
                       }
                       onClick={() => {
+                        if (!lastHistoryId) {
+                          setError("该图片尚未入库，无法生成视频");
+                          return;
+                        }
                         setError(null);
-                        setDialogIndex(i);
+                        setDialogTarget({
+                          historyId: lastHistoryId,
+                          imageIndex: i,
+                          imageFile: img.localUrl,
+                          prompt: lastRequest?.prompt ?? prompt,
+                        });
                       }}
                       className="text-zinc-600 underline hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
                     >
@@ -889,22 +907,45 @@ export default function Home() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                {entry.images.map((img, i) => (
+                {entry.images.map((img, i) => {
+                  const task = activeVideoTasks[videoKey(entry.id, i)];
+                  const videoReq = task?.phase === "error" ? task.req : undefined;
+                  const busy =
+                    task?.phase === "submitting" || task?.phase === "generating";
+                  return (
                   <div key={`${entry.id}-${img.localUrl}-${i}`} className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setLightbox({ images: entry.images, index: i })
-                      }
-                      title="点击放大"
-                      className="group relative"
-                    >
-                      <img
-                        src={img.localUrl}
-                        alt={`历史图片 ${i + 1}`}
-                        className="h-20 w-20 cursor-zoom-in rounded-md border border-zinc-200 object-cover transition-opacity group-hover:opacity-80 dark:border-zinc-800"
-                      />
-                    </button>
+                    <div className="flex flex-col gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLightbox({ images: entry.images, index: i })
+                        }
+                        title="点击放大"
+                        className="group relative"
+                      >
+                        <img
+                          src={img.localUrl}
+                          alt={`历史图片 ${i + 1}`}
+                          className="h-20 w-20 cursor-zoom-in rounded-md border border-zinc-200 object-cover transition-opacity group-hover:opacity-80 dark:border-zinc-800"
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          setError(null);
+                          setDialogTarget({
+                            historyId: entry.id,
+                            imageIndex: i,
+                            imageFile: img.localUrl,
+                            prompt: entry.prompt,
+                          });
+                        }}
+                        className="text-xs text-zinc-600 underline hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
+                      >
+                        生成视频
+                      </button>
+                    </div>
                     {img.videoUrl && (
                       <video
                         src={img.videoUrl}
@@ -914,13 +955,30 @@ export default function Home() {
                         className="h-20 w-20 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
                       />
                     )}
-                    {!img.videoUrl && img.pendingVideo && (
+                    {!img.videoUrl && (busy || img.pendingVideo) && (
                       <span className="flex h-20 w-20 animate-pulse items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 p-1 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-                        视频生成中…
+                        {task?.phase === "submitting" ? "提交中…" : "视频生成中…"}
                       </span>
                     )}
+                    {task?.phase === "error" && (
+                      <div className="flex h-20 flex-col justify-center gap-1 text-xs text-red-600 dark:text-red-400">
+                        <span className="max-w-32">{task.error}</span>
+                        {videoReq && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              submitVideoTask(entry.id, i, videoReq, img.localUrl)
+                            }
+                            className="self-start underline hover:text-red-800 dark:hover:text-red-200"
+                          >
+                            重试
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -946,12 +1004,12 @@ export default function Home() {
         />
       )}
 
-      {dialogIndex !== null && (
+      {dialogTarget && (
         <VideoDialog
-          initialPrompt={lastRequest?.prompt ?? prompt}
+          initialPrompt={dialogTarget.prompt}
           submitting={dialogTask?.phase === "submitting"}
           error={dialogTask?.phase === "error" ? dialogTask.error ?? null : null}
-          onClose={() => setDialogIndex(null)}
+          onClose={() => setDialogTarget(null)}
           onSubmit={handleVideoSubmit}
         />
       )}
