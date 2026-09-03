@@ -31,6 +31,7 @@ let inflight = 0;
 
 interface VideoRequestBody {
   imageFile: string;
+  lastFrameImage?: string;
   prompt: string;
   duration: VideoDuration;
   resolution: VideoResolution;
@@ -68,11 +69,23 @@ export async function POST(request: Request) {
     }
   }
 
+  // 尾帧可来自同批历史图（本地路径）或本地上传（已是 Data URL），仅转换本地路径
+  let lastFrameImage = raw.lastFrameImage ?? "";
+  if (isLocalGeneratedPath(lastFrameImage)) {
+    try {
+      lastFrameImage = await localReferenceToDataUrl(lastFrameImage);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "尾帧图片解析失败";
+      return NextResponse.json({ error: message }, { status: 400 });
+    }
+  }
+
   const params: VideoTaskParams = {
     prompt: typeof raw.prompt === "string" ? raw.prompt : "",
     duration: raw.duration as VideoDuration,
     resolution: raw.resolution as VideoResolution,
     firstFrameImage,
+    lastFrameImage,
   };
   const invalid = validateVideoParams(params);
   if (invalid) {

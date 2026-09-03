@@ -5,6 +5,8 @@ export const VIDEO_QUERY_PATH = "/v1/query/video_generation";
 export const FILE_RETRIEVE_PATH = "/v1/files/retrieve";
 
 export const VIDEO_MODEL = "MiniMax-Hailuo-2.3";
+// 首尾帧生成仅支持 Hailuo-02（上游文档 model 枚举），提供尾帧时切换
+export const VIDEO_FIRST_LAST_FRAME_MODEL = "MiniMax-Hailuo-02";
 
 export const VIDEO_DURATIONS = [6, 10] as const;
 export type VideoDuration = (typeof VIDEO_DURATIONS)[number];
@@ -26,6 +28,10 @@ export const RESOLUTIONS_BY_DURATION: Record<
 
 export const VIDEO_PROMPT_MAX_LENGTH = 2000;
 
+// 上游要求首/尾帧图片体积 < 20MB（JPG/JPEG/PNG/WebP）
+export const VIDEO_FRAME_MAX_BYTES = 20 * 1024 * 1024;
+export const VIDEO_FRAME_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
 export const VIDEO_STATUSES = [
   "Preparing",
   "Queueing",
@@ -44,7 +50,7 @@ export const PENDING_VIDEO_STATUSES: readonly VideoStatus[] = [
 export const VIDEO_POLL_INTERVAL_MS = 5_000;
 export const VIDEO_POLL_TIMEOUT_MS = 900_000;
 
-const FIRST_FRAME_RE =
+const FRAME_IMAGE_RE =
   /^(https?:\/\/.+|data:image\/(jpeg|png|webp);base64,.+)$/;
 
 export interface VideoTaskParams {
@@ -52,6 +58,8 @@ export interface VideoTaskParams {
   duration: VideoDuration;
   resolution: VideoResolution;
   firstFrameImage: string;
+  /** 空字符串或未提供表示仅首帧生成 */
+  lastFrameImage?: string;
 }
 
 export function validateVideoParams(params: VideoTaskParams): string | null {
@@ -70,9 +78,16 @@ export function validateVideoParams(params: VideoTaskParams): string | null {
   }
   if (
     typeof params.firstFrameImage !== "string" ||
-    !FIRST_FRAME_RE.test(params.firstFrameImage)
+    !FRAME_IMAGE_RE.test(params.firstFrameImage)
   ) {
     return "first_frame_image 必须是 http(s) URL 或 jpeg、png、webp 的 Base64 Data URL";
+  }
+  if (
+    params.lastFrameImage !== undefined &&
+    params.lastFrameImage !== "" &&
+    !FRAME_IMAGE_RE.test(params.lastFrameImage)
+  ) {
+    return "last_frame_image 必须是 http(s) URL 或 jpeg、png、webp 的 Base64 Data URL";
   }
   return null;
 }
@@ -80,12 +95,16 @@ export function validateVideoParams(params: VideoTaskParams): string | null {
 export function buildVideoRequestBody(
   params: VideoTaskParams,
 ): Record<string, unknown> {
+  const hasLastFrame = params.lastFrameImage !== undefined && params.lastFrameImage !== "";
   const body: Record<string, unknown> = {
-    model: VIDEO_MODEL,
+    model: hasLastFrame ? VIDEO_FIRST_LAST_FRAME_MODEL : VIDEO_MODEL,
     first_frame_image: params.firstFrameImage,
     duration: params.duration,
     resolution: params.resolution,
   };
+  if (hasLastFrame) {
+    body.last_frame_image = params.lastFrameImage;
+  }
   if (params.prompt.trim() !== "") {
     body.prompt = params.prompt;
   }

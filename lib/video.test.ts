@@ -3,6 +3,7 @@ import {
   RESOLUTIONS_BY_DURATION,
   VIDEO_MODEL,
   VIDEO_PROMPT_MAX_LENGTH,
+  VIDEO_FIRST_LAST_FRAME_MODEL,
   buildVideoRequestBody,
   parseCreateVideoResponse,
   parseQueryVideoResponse,
@@ -80,6 +81,45 @@ describe("buildVideoRequestBody", () => {
           first_frame_image: "https://example.com/a.jpeg",
         },
       },
+      {
+        name: "带尾帧时切换首尾帧模型并传 last_frame_image",
+        params: makeParams({
+          lastFrameImage: "https://example.com/b.png",
+        }),
+        want: {
+          model: VIDEO_FIRST_LAST_FRAME_MODEL,
+          prompt: "镜头缓缓推近，猫眨了眨眼",
+          duration: 6,
+          resolution: "768P",
+          first_frame_image: "https://example.com/a.jpeg",
+          last_frame_image: "https://example.com/b.png",
+        },
+      },
+      {
+        name: "尾帧 data URL 透传",
+        params: makeParams({
+          lastFrameImage: "data:image/webp;base64,QUJDRA==",
+        }),
+        want: {
+          model: VIDEO_FIRST_LAST_FRAME_MODEL,
+          prompt: "镜头缓缓推近，猫眨了眨眼",
+          duration: 6,
+          resolution: "768P",
+          first_frame_image: "https://example.com/a.jpeg",
+          last_frame_image: "data:image/webp;base64,QUJDRA==",
+        },
+      },
+      {
+        name: "尾帧为空字符串视为未提供",
+        params: makeParams({ lastFrameImage: "" }),
+        want: {
+          model: VIDEO_MODEL,
+          prompt: "镜头缓缓推近，猫眨了眨眼",
+          duration: 6,
+          resolution: "768P",
+          first_frame_image: "https://example.com/a.jpeg",
+        },
+      },
     ];
 
   for (const c of cases) {
@@ -140,6 +180,28 @@ describe("validateVideoParams", () => {
       name: "webp data URL 首帧通过",
       params: makeParams({ firstFrameImage: "data:image/webp;base64,QUJD" }),
       wantNull: true,
+    },
+    {
+      name: "合法尾帧通过",
+      params: makeParams({ lastFrameImage: "https://example.com/b.png" }),
+      wantNull: true,
+    },
+    {
+      name: "尾帧为空字符串通过（视为未提供）",
+      params: makeParams({ lastFrameImage: "" }),
+      wantNull: true,
+    },
+    {
+      name: "尾帧为本地路径（未转换）被拒",
+      params: makeParams({ lastFrameImage: "/generated/123-2.jpeg" }),
+      wantNull: false,
+      wantIncludes: "last_frame_image",
+    },
+    {
+      name: "尾帧为非图片 data URL 被拒",
+      params: makeParams({ lastFrameImage: "data:video/mp4;base64,AAAA" }),
+      wantNull: false,
+      wantIncludes: "last_frame_image",
     },
   ];
 

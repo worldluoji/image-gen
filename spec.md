@@ -33,3 +33,10 @@
   - 用量统计与每日限额：lib/usage.ts（applyUsage 纯函数翻篇归零、overQuota 边界、recordUsage 损坏静默重建）；MAX_IMAGES_PER_DAY=200 / MAX_VIDEOS_PER_DAY=30 / MAX_CONCURRENT_GENERATIONS=2；generate 与 video POST 调上游前检查额度与模块级 inflight（429 友好提示），图片成功后按 successCount 记数、视频仅在 Success 且挂载历史返回 true 时记 1 避免轮询重试重复计数；polish 成功记数；GET /api/usage + 页脚「今日：图片 X · 视频 Y · 润色 Z」（拉取失败静默）
   - 测试先行：polish 表驱动（build/parse：正常/围栏/引号剥离/空 content/base_resp 错误/超长截断）+ storage 置顶 10 例（setHistoryPin 五态、截断 4 例、常量关系）+ usage 17 例（getToday/applyUsage 翻篇与脏数据/overQuota 边界/recordUsage+readToday 真实 tmpdir）
   - 已知边界：usage/历史均无锁读改写，朋友规模并发可小幅超配额；pinned 条目含超时 pendingVideo 时徽标随条目常驻；无鉴权，限额防误触不防刻意刷；README 同步）
+- 8. 首尾帧生视频 ✅（已完成：
+  - lib/video.ts：VideoTaskParams 增可选 lastFrameImage（空串=未提供），校验与首帧同规则（http(s) URL 或 jpeg/png/webp Data URL）；提供尾帧时 buildVideoRequestBody 传 last_frame_image 且 model 切换为 MiniMax-Hailuo-02（上游首尾帧接口文档枚举仅此模型，时长-分辨率约束不变）；导出 VIDEO_FIRST_LAST_FRAME_MODEL / VIDEO_FRAME_MAX_BYTES / VIDEO_FRAME_TYPES
+  - POST /api/video：lastFrameImage 为 /generated/ 本地路径时（同批图）复用 localReferenceToDataUrl 转 Base64，上传图已是 Data URL 直接透传
+  - 弹窗：新增「尾帧（可选）」区，支持从同批次其他图片点选（排除首帧自身）或本地上传（格式/≤20MB 前端校验）；VideoSubmitRequest 增 lastFrameImage，error 态就地重试随 req 一并复用
+  - page.tsx：dialogOtherImages 从 history 按 dialogTarget 派生（结果批次生成后即入历史，统一数据源）；删除 current 批次后关闭弹窗（修复 25b4bdc 遗留的 setDialogIndex 笔误致类型错误）
+  - 测试先行：buildVideoRequestBody 尾帧 3 例（切模型/透传 data URL/空串省略）+ validateVideoParams 尾帧 4 例（合法/空串/本地路径拒/非图 data URL 拒）
+  - 已知边界：上传尾帧的 Data URL 仅存于内存 req，刷新后就地重试不含尾帧（历史路径尾帧不受影响）；README 同步）

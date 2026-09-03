@@ -278,7 +278,7 @@ export default function Home() {
         setLastHistoryId(null);
         setImages([]);
         setFailedCount(0);
-        setDialogIndex(null);
+        setDialogTarget(null);
       }
       void refreshHistory();
     } catch {
@@ -463,6 +463,19 @@ export default function Home() {
   const dialogTask = dialogTarget
     ? activeVideoTasks[videoKey(dialogTarget.historyId, dialogTarget.imageIndex)]
     : undefined;
+  // 同批次其他图片可选作尾帧；结果区批次生成后即入历史，故统一从 history 取
+  const dialogOtherImages = useMemo(() => {
+    if (!dialogTarget) {
+      return [];
+    }
+    const entry = history.find((e) => e.id === dialogTarget.historyId);
+    if (!entry) {
+      return [];
+    }
+    return entry.images
+      .filter((_, i) => i !== dialogTarget.imageIndex)
+      .map((img) => img.localUrl);
+  }, [history, dialogTarget]);
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-12">
@@ -1009,6 +1022,7 @@ export default function Home() {
           initialPrompt={dialogTarget.prompt}
           submitting={dialogTask?.phase === "submitting"}
           error={dialogTask?.phase === "error" ? dialogTask.error ?? null : null}
+          otherImages={dialogOtherImages}
           onClose={() => setDialogTarget(null)}
           onSubmit={handleVideoSubmit}
         />
