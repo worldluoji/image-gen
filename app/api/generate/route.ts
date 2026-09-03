@@ -13,6 +13,16 @@ import {
   type GeneratedImage,
   type HistoryEntry,
 } from "@/lib/storage";
+import {
+  MAX_CONCURRENT_GENERATIONS,
+  MAX_IMAGES_PER_DAY,
+  overQuota,
+  readToday,
+  recordUsage,
+} from "@/lib/usage";
+
+// 模块级并发计数：单实例内存态，防误触连点而非刻意限流
+let inflight = 0;
 
 async function resolveSubjectReferences(
   params: GenerationParams,
@@ -61,6 +71,21 @@ export async function POST(request: Request) {
     );
   }
 
+  if (inflight >= MAX_CONCURRENT_GENERATIONS) {
+    return NextResponse.json(
+      { error: "当前使用人数较多，请稍后再试" },
+      { status: 429 },
+    );
+  }
+  const usage = await readToday();
+  if (overQuota(usage.images, params.n, MAX_IMAGES_PER_DAY)) {
+    return NextResponse.json(
+      { error: `今日图片额度已用完（${MAX_IMAGES_PER_DAY} 张），明天再来吧` },
+      { status: 429 },
+    );
+  }
+
+  inflight++;
   try {
     const result = await generateImages(params, apiKey);
 
@@ -89,6 +114,7 @@ export async function POST(request: Request) {
       failedCount: result.failedCount,
     };
     await appendHistory(entry);
+    await recordUsage("images", result.successCount);
 
     return NextResponse.json({
       images,
@@ -106,5 +132,7 @@ export async function POST(request: Request) {
       { error: isTimeout ? "生成超时，请稍后重试" : message },
       { status: 502 },
     );
+  } finally {
+    inflight--;
   }
 }

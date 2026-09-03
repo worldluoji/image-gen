@@ -29,6 +29,7 @@ import {
   type Model,
 } from "@/lib/minimax";
 import type { GeneratedImage, HistoryEntry } from "@/lib/storage";
+import type { UsageDay } from "@/lib/usage";
 import { PROMPT_TEMPLATES, recentPrompts } from "@/lib/prompt-templates";
 
 const CUSTOM_STYLE = "自定义";
@@ -68,6 +69,7 @@ export default function Home() {
   const [customStyle, setCustomStyle] = useState("");
   const [refImage, setRefImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [polishLoading, setPolishLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [failedCount, setFailedCount] = useState(0);
@@ -80,6 +82,20 @@ export default function Home() {
     index: number;
   } | null>(null);
   const [videoTasks, setVideoTasks] = useState<Record<string, VideoTask>>({});
+  const [usage, setUsage] = useState<UsageDay | null>(null);
+
+  const refreshUsage = useCallback(() => {
+    fetch("/api/usage")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          setUsage(data);
+        }
+      })
+      .catch(() => {
+        // 用量加载失败不影响主流程，静默处理
+      });
+  }, []);
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -104,7 +120,8 @@ export default function Home() {
       .catch(() => {
         // 历史加载失败不影响主流程，静默处理
       });
-  }, []);
+    void refreshUsage();
+  }, [refreshUsage]);
 
   function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
     setError(null);
@@ -149,6 +166,7 @@ export default function Home() {
         setFailedCount(data.failedCount ?? 0);
         setLastHistoryId(data.historyId ?? null);
         void refreshHistory();
+        void refreshUsage();
       }
     } catch {
       setError("网络错误，请稍后重试");
@@ -179,6 +197,29 @@ export default function Home() {
   function handleRegenerate() {
     if (lastRequest) {
       void runGeneration(lastRequest);
+    }
+  }
+
+  async function handlePolish() {
+    setError(null);
+    setPolishLoading(true);
+    try {
+      const res = await fetch("/api/polish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? `请求失败 (HTTP ${res.status})`);
+      } else {
+        setPrompt(data.prompt);
+        void refreshUsage();
+      }
+    } catch {
+      setError("网络错误，请稍后重试");
+    } finally {
+      setPolishLoading(false);
     }
   }
 
@@ -237,6 +278,30 @@ export default function Home() {
       void refreshHistory();
     } catch {
       setError("网络错误，请稍后重试");
+    }
+  }
+
+  async function handleTogglePin(entry: HistoryEntry) {
+    const nextPinned = !entry.pinned;
+    setError(null);
+    // 乐观更新，失败时以服务端为准回滚
+    setHistory((prev) =>
+      prev.map((e) => (e.id === entry.id ? { ...e, pinned: nextPinned } : e)),
+    );
+    try {
+      const res = await fetch(`/api/history/${entry.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned: nextPinned }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error ?? `更新收藏失败 (HTTP ${res.status})`);
+        void refreshHistory();
+      }
+    } catch {
+      setError("网络错误，请稍后重试");
+      void refreshHistory();
     }
   }
 
@@ -356,6 +421,7 @@ export default function Home() {
             } else if (data.status === "Success") {
               updateVideoTask(key, { ...task, phase: "done", videoUrl: data.videoUrl });
               void refreshHistory();
+              void refreshUsage();
             } else if (data.status === "Fail") {
               updateVideoTask(key, {
                 ...task,
@@ -372,9 +438,17 @@ export default function Home() {
       })();
     }, VIDEO_POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [activeVideoTasks, refreshHistory]);
+  }, [activeVideoTasks, refreshHistory, refreshUsage]);
 
   const recent = recentPrompts(history);
+  // 收藏排最前；稳定排序，仅影响展示，recentPrompts / 视频任务派生仍吃原始时间倒序
+  const displayHistory = useMemo(
+    () =>
+      [...history].sort(
+        (a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)),
+      ),
+    [history],
+  );
   const skeletonRatio = aspectRatio.replace(":", " / ");
   const dialogTask =
     dialogIndex !== null && lastHistoryId
@@ -396,6 +470,17 @@ export default function Home() {
           placeholder="描述你想生成的图片，例如：一只戴帽子的猫走在东京街头，赛博朋克风格"
           className="rounded-lg border border-zinc-300 bg-white p-3 text-sm text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
         />
+
+        <div className="-mt-2 flex justify-end">
+          <button
+            type="button"
+            disabled={!prompt.trim() || loading || polishLoading}
+            onClick={() => void handlePolish()}
+            className="rounded-full border border-zinc-300 px-3 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+          >
+            {polishLoading ? "润色中…" : "AI 润色"}
+          </button>
+        </div>
 
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -759,7 +844,7 @@ export default function Home() {
           <h2 className="text-lg font-semibold tracking-tight text-zinc-800 dark:text-zinc-200">
             历史生成
           </h2>
-          {history.map((entry) => (
+          {displayHistory.map((entry) => (
             <div
               key={entry.id}
               className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
@@ -775,6 +860,18 @@ export default function Home() {
                   </span>
                 </div>
                 <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleTogglePin(entry)}
+                    title={entry.pinned ? "取消收藏" : "收藏置顶"}
+                    className={
+                      entry.pinned
+                        ? "rounded-md border border-amber-400 bg-amber-50 px-3 py-1 text-xs text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+                        : "rounded-md border border-zinc-300 px-3 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                    }
+                  >
+                    {entry.pinned ? "★ 已收藏" : "☆ 收藏"}
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleLoadEntry(entry)}
@@ -828,6 +925,12 @@ export default function Home() {
             </div>
           ))}
         </section>
+      )}
+
+      {usage && (
+        <footer className="text-center text-xs text-zinc-500">
+          今日：图片 {usage.images} · 视频 {usage.videos} · 润色 {usage.polishes}
+        </footer>
       )}
 
       {lightbox && (

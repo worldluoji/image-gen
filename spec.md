@@ -27,3 +27,9 @@
   - 就地重试：图片部分失败时结果区头部「重试失败的 N 张」以同参数 n=failedCount 重新生成；VideoTask 增 req 字段记录弹窗提交参数，视频 error 态渲染「重试」按钮，handleVideoSubmit 重构为 submitVideoTask(historyId, imageIndex, req, imageFile) 供弹窗与重试共用（服务端 Fail 已清 pendingVideo，刷新后无 error 态 derived 任务）
   - 测试先行：storage 13 例（MEDIA_RE 表、deleteHistoryEntry 四态、截断清理两态）+ prompt-templates 表驱动（去重/顺序/limit/默认值/模板长度唯一性）
   - 已知边界：删除与轮询并发无锁（个人工具接受）；二次生成视频覆盖旧 videoUrl 时旧 mp4 文件泄漏（既有问题，范围外）；README 同步）
+- 7. 产品体验优化三期 ✅（已完成：
+  - AI 润色描述：端点探测后定稿 /v1/chat/completions + MiniMax-Text-01（/v1/text_generation 与 /v1/openai/chat/completions 均 404）；lib/polish.ts（buildPolishRequest/parsePolishResponse 剥围栏与引号/超长截断，polishPrompt 30s 超时）；POST /api/polish（非空/长度校验、错误映射同 generate）；textarea 右下「AI 润色」按钮，成功替换 prompt；lib/minimax.ts 提取通用 requestMiniMax（video.ts/generate 共用）
+  - 收藏置顶：HistoryEntry.pinned；setHistoryPin（损坏文件向上抛→500，收藏位满/条目不存在→false）；MAX_PINNED_ENTRIES=49 保证截断总有 unpin 槽位；appendHistory 截断改为「全部 pinned + 最新 unpinned 补至 50」，清理只碰被剔条目；PATCH /api/history/[id]（400/404/409，false 时读历史区分不存在与已满）；历史条目 ☆/★ 乐观更新（失败 refreshHistory 回滚），displayHistory 仅渲染层稳定排序，recentPrompts/视频派生仍吃原始时间倒序
+  - 用量统计与每日限额：lib/usage.ts（applyUsage 纯函数翻篇归零、overQuota 边界、recordUsage 损坏静默重建）；MAX_IMAGES_PER_DAY=200 / MAX_VIDEOS_PER_DAY=30 / MAX_CONCURRENT_GENERATIONS=2；generate 与 video POST 调上游前检查额度与模块级 inflight（429 友好提示），图片成功后按 successCount 记数、视频仅在 Success 且挂载历史返回 true 时记 1 避免轮询重试重复计数；polish 成功记数；GET /api/usage + 页脚「今日：图片 X · 视频 Y · 润色 Z」（拉取失败静默）
+  - 测试先行：polish 表驱动（build/parse：正常/围栏/引号剥离/空 content/base_resp 错误/超长截断）+ storage 置顶 10 例（setHistoryPin 五态、截断 4 例、常量关系）+ usage 17 例（getToday/applyUsage 翻篇与脏数据/overQuota 边界/recordUsage+readToday 真实 tmpdir）
+  - 已知边界：usage/历史均无锁读改写，朋友规模并发可小幅超配额；pinned 条目含超时 pendingVideo 时徽标随条目常驻；无鉴权，限额防误触不防刻意刷；README 同步）

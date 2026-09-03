@@ -1,8 +1,4 @@
-import {
-  MINIMAX_BASE_URL,
-  REQUEST_TIMEOUT_MS,
-  baseRespError,
-} from "./minimax";
+import { baseRespError, requestMiniMax } from "./minimax";
 
 export const VIDEO_GENERATION_PATH = "/v1/video_generation";
 export const VIDEO_QUERY_PATH = "/v1/query/video_generation";
@@ -151,26 +147,6 @@ export function parseRetrieveResponse(json: unknown): string {
     throw new Error("MiniMax 未返回视频下载地址");
   }
   return url;
-}
-
-async function requestMiniMax(
-  path: string,
-  init: RequestInit,
-  apiKey: string,
-): Promise<unknown> {
-  const response = await fetch(`${MINIMAX_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    throw new Error(`MiniMax 接口 HTTP ${response.status}`);
-  }
-  return response.json();
 }
 
 export async function createVideoTask(

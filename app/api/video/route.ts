@@ -18,6 +18,16 @@ import {
   saveGeneratedFile,
   toLocalVideoName,
 } from "@/lib/storage";
+import {
+  MAX_CONCURRENT_GENERATIONS,
+  MAX_VIDEOS_PER_DAY,
+  overQuota,
+  readToday,
+  recordUsage,
+} from "@/lib/usage";
+
+// 模块级并发计数（仅创建任务这一步）：防误触连点而非刻意限流
+let inflight = 0;
 
 interface VideoRequestBody {
   imageFile: string;
@@ -86,6 +96,21 @@ export async function POST(request: Request) {
     );
   }
 
+  if (inflight >= MAX_CONCURRENT_GENERATIONS) {
+    return NextResponse.json(
+      { error: "当前使用人数较多，请稍后再试" },
+      { status: 429 },
+    );
+  }
+  const usage = await readToday();
+  if (overQuota(usage.videos, 1, MAX_VIDEOS_PER_DAY)) {
+    return NextResponse.json(
+      { error: `今日视频额度已用完（${MAX_VIDEOS_PER_DAY} 个），明天再来吧` },
+      { status: 429 },
+    );
+  }
+
+  inflight++;
   try {
     const taskId = await createVideoTask(params, apiKey);
     // 持久化进行中任务供刷新恢复；挂载失败（如条目被截断）不影响本次任务创建
@@ -99,6 +124,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ taskId });
   } catch (err) {
     return upstreamError(err);
+  } finally {
+    inflight--;
   }
 }
 
@@ -154,7 +181,11 @@ export async function GET(request: Request) {
     }
     const videoUrl = `/generated/${fileName}`;
     try {
-      await attachVideoToHistory(historyId, imageIndex, videoUrl);
+      // 只在成功挂载历史时计一次数：避免下载/写入重试导致重复计数
+      const attached = await attachVideoToHistory(historyId, imageIndex, videoUrl);
+      if (attached) {
+        await recordUsage("videos", 1);
+      }
     } catch {
       // 历史写入失败不影响本次视频返回
       console.warn(`视频已保存但写入历史失败: ${videoUrl}`);

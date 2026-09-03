@@ -207,22 +207,36 @@ export function parseResponse(json: unknown): GenerationResult {
   };
 }
 
-export async function generateImages(
-  params: GenerationParams,
+/** 向 MiniMax 发起请求并解析 JSON 响应；HTTP 非 2xx 抛错 */
+export async function requestMiniMax(
+  path: string,
+  init: RequestInit,
   apiKey: string,
-): Promise<GenerationResult> {
-  const response = await fetch(`${MINIMAX_BASE_URL}${IMAGE_GENERATION_PATH}`, {
-    method: "POST",
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+): Promise<unknown> {
+  const response = await fetch(`${MINIMAX_BASE_URL}${path}`, {
+    ...init,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify(buildRequestBody(params)),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
     cache: "no-store",
   });
   if (!response.ok) {
     throw new Error(`MiniMax 接口 HTTP ${response.status}`);
   }
-  return parseResponse(await response.json());
+  return response.json();
+}
+
+export async function generateImages(
+  params: GenerationParams,
+  apiKey: string,
+): Promise<GenerationResult> {
+  const json = await requestMiniMax(
+    IMAGE_GENERATION_PATH,
+    { method: "POST", body: JSON.stringify(buildRequestBody(params)) },
+    apiKey,
+  );
+  return parseResponse(json);
 }

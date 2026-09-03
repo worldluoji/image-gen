@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   GENERATED_MEDIA_FILE_RE,
   HISTORY_MAX_ENTRIES,
+  MAX_PINNED_ENTRIES,
   appendHistory,
   attachVideoTaskToHistory,
   attachVideoToHistory,
@@ -13,6 +14,7 @@ import {
   isLocalGeneratedPath,
   localReferenceToDataUrl,
   readHistory,
+  setHistoryPin,
   toLocalImageName,
   toLocalVideoName,
   type HistoryEntry,
@@ -647,5 +649,148 @@ describe("appendHistory 截断文件清理", () => {
     );
     const history = await readHistory(file);
     expect(history.map((e) => e.id)).toEqual(["b"]);
+  });
+});
+
+describe("MAX_PINNED_ENTRIES", () => {
+  it("恒小于 HISTORY_MAX_ENTRIES，为最新 unpinned 条目至少留一个槽位", () => {
+    expect(MAX_PINNED_ENTRIES).toBe(HISTORY_MAX_ENTRIES - 1);
+  });
+});
+
+describe("setHistoryPin", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "image-gen-pin-"));
+    file = join(dir, "history.json");
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("pin 与 unpin 正常切换并可读回", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    expect(await setHistoryPin("h1", true, file)).toBe(true);
+    expect((await readHistory(file))[0].pinned).toBe(true);
+
+    expect(await setHistoryPin("h1", false, file)).toBe(true);
+    expect((await readHistory(file))[0].pinned).toBeUndefined();
+  });
+
+  it("id 不存在时返回 false 且不改写文件", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50);
+    const before = await readHistory(file);
+    expect(await setHistoryPin("missing", true, file)).toBe(false);
+    expect(await readHistory(file)).toEqual(before);
+  });
+
+  it("收藏已满时再 pin 返回 false 且不改写文件", async () => {
+    const entries = Array.from({ length: MAX_PINNED_ENTRIES }, (_, i) =>
+      makeEntry({ id: `p${i}`, pinned: true }),
+    );
+    entries.push(makeEntry({ id: "free" }));
+    await writeFile(file, JSON.stringify(entries));
+
+    expect(await setHistoryPin("free", true, file)).toBe(false);
+    const after = await readHistory(file);
+    expect(after.find((e) => e.id === "free")?.pinned).toBeUndefined();
+  });
+
+  it("unpin 不受收藏上限限制", async () => {
+    const entries = Array.from({ length: MAX_PINNED_ENTRIES }, (_, i) =>
+      makeEntry({ id: `p${i}`, pinned: true }),
+    );
+    await writeFile(file, JSON.stringify(entries));
+    expect(await setHistoryPin("p0", false, file)).toBe(true);
+    expect((await readHistory(file))[0].pinned).toBeUndefined();
+  });
+
+  it("损坏文件向上抛错（不静默重建）", async () => {
+    await writeFile(file, "{ not json");
+    await expect(setHistoryPin("h1", true, file)).rejects.toThrow(/历史/);
+  });
+});
+
+describe("appendHistory 置顶截断", () => {
+  let dir: string;
+  let file: string;
+  let genDir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "image-gen-pin-trunc-"));
+    file = join(dir, "history.json");
+    genDir = join(dir, "generated");
+    await mkdir(genDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function entryWithFile(id: string, name: string): Promise<HistoryEntry> {
+    await writeFile(join(genDir, name), id);
+    return makeEntry({
+      id,
+      images: [{ localUrl: `/generated/${name}`, remoteUrl: `https://x/${name}` }],
+    });
+  }
+
+  it("pinned 最旧条目不参与截断，文件保留；被剔的 unpinned 文件删除", async () => {
+    const pinned = await entryWithFile("p0", "100-1.png");
+    await appendHistory(pinned, file, 50, genDir);
+    await setHistoryPin("p0", true, file);
+    await appendHistory(await entryWithFile("u1", "200-1.png"), file, 3, genDir);
+    await appendHistory(await entryWithFile("u2", "300-1.png"), file, 3, genDir);
+    // combined = [u2, u1, p0] 已满 3 条，追加新条挤掉最旧 unpinned
+    await appendHistory(await entryWithFile("u3", "400-1.png"), file, 3, genDir);
+
+    const history = await readHistory(file);
+    expect(history.map((e) => e.id)).toEqual(["u3", "u2", "p0"]);
+    expect(await fileExists(join(genDir, "100-1.png"))).toBe(true);
+    expect(await fileExists(join(genDir, "200-1.png"))).toBe(false);
+    expect(await fileExists(join(genDir, "300-1.png"))).toBe(true);
+    expect(await fileExists(join(genDir, "400-1.png"))).toBe(true);
+  });
+
+  it("清理只删除被淘汰条目的文件，保留条目文件逐一完好", async () => {
+    await appendHistory(await entryWithFile("a", "10-1.png"), file, 50, genDir);
+    await appendHistory(await entryWithFile("b", "20-1.png"), file, 50, genDir);
+    await appendHistory(await entryWithFile("c", "30-1.png"), file, 2, genDir);
+    expect(await fileExists(join(genDir, "10-1.png"))).toBe(false);
+    expect(await fileExists(join(genDir, "20-1.png"))).toBe(true);
+    expect(await fileExists(join(genDir, "30-1.png"))).toBe(true);
+  });
+
+  it("无 pinned 时截断行为与原逻辑一致（回归）", async () => {
+    for (const id of ["e0", "e1", "e2", "e3"]) {
+      await appendHistory(makeEntry({ id }), file, 3, genDir);
+    }
+    const history = await readHistory(file);
+    expect(history.map((e) => e.id)).toEqual(["e3", "e2", "e1"]);
+  });
+
+  it("pinned 数量逼近上限时新 unpinned 挤掉最旧 unpinned", async () => {
+    const max = 4;
+    // 3 个 pinned + 1 个 unpinned，槽位仅剩 1 个给 unpinned
+    const pinnedNames: Record<string, string> = {
+      p0: "501-1.png",
+      p1: "502-1.png",
+      p2: "503-1.png",
+    };
+    for (const id of ["p2", "p1", "p0"]) {
+      await appendHistory(await entryWithFile(id, pinnedNames[id]), file, 50, genDir);
+      await setHistoryPin(id, true, file);
+    }
+    await appendHistory(await entryWithFile("u-old", "599-1.png"), file, 50, genDir);
+    await appendHistory(await entryWithFile("u-new", "600-1.png"), file, max, genDir);
+
+    const history = await readHistory(file);
+    // p0 最后追加，时间倒序下排在 pinned 最前
+    expect(history.map((e) => e.id)).toEqual(["u-new", "p0", "p1", "p2"]);
+    expect(await fileExists(join(genDir, "599-1.png"))).toBe(false);
+    expect(await fileExists(join(genDir, "600-1.png"))).toBe(true);
   });
 });

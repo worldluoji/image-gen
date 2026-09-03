@@ -5,6 +5,9 @@ import type { AspectRatio, Model } from "./minimax";
 export const GENERATED_DIR = join(process.cwd(), "public", "generated");
 export const HISTORY_FILE = join(process.cwd(), "data", "history.json");
 export const HISTORY_MAX_ENTRIES = 50;
+// 收藏位刻意少留一格：保证 appendHistory 截断时总有至少一个 unpinned 槽位，
+// 新批次不会因收藏占满而被立即丢弃
+export const MAX_PINNED_ENTRIES = HISTORY_MAX_ENTRIES - 1;
 
 const ALLOWED_EXTENSIONS = ["png", "jpg", "jpeg", "webp"] as const;
 type ImageExtension = (typeof ALLOWED_EXTENSIONS)[number];
@@ -50,6 +53,8 @@ export interface HistoryEntry {
   n: number;
   images: GeneratedImage[];
   failedCount: number;
+  /** 收藏置顶：不参与截断，渲染时排最前 */
+  pinned?: boolean;
 }
 
 function extensionFromUrl(url: string): ImageExtension {
@@ -183,11 +188,22 @@ export async function appendHistory(
     // 损坏文件不阻断新记录，直接重建
   }
   const combined = [entry, ...existing];
-  const next = combined.slice(0, maxEntries);
+  // 保留 = 全部 pinned + 最新 unpinned 补至 maxEntries；按遍历分池，存储数组维持时间倒序
+  const unpinnedKeep = Math.max(maxEntries - combined.filter((e) => e.pinned).length, 0);
+  const next: HistoryEntry[] = [];
+  const truncated: HistoryEntry[] = [];
+  let keptUnpinned = 0;
+  for (const e of combined) {
+    if (e.pinned || keptUnpinned < unpinnedKeep) {
+      if (!e.pinned) keptUnpinned++;
+      next.push(e);
+    } else {
+      truncated.push(e);
+    }
+  }
   await mkdir(join(historyFile, ".."), { recursive: true });
   await writeFile(historyFile, JSON.stringify(next, null, 2), "utf-8");
   // 先写历史后删文件：崩溃最坏留孤儿文件，反序则留下引用碎图的记录
-  const truncated = combined.slice(maxEntries);
   if (truncated.length > 0) {
     await removeGeneratedFiles(
       truncated.flatMap(collectEntryFileNames),
@@ -196,6 +212,33 @@ export async function appendHistory(
     );
   }
   return next;
+}
+
+/**
+ * 切换历史条目收藏态。返回 false 表示条目不存在或收藏位已满；
+ * 历史文件损坏时向上抛错（由路由转 500），不做静默重建。
+ */
+export async function setHistoryPin(
+  id: string,
+  pinned: boolean,
+  historyFile: string = HISTORY_FILE,
+): Promise<boolean> {
+  const history = await readHistory(historyFile);
+  const entry = history.find((e) => e.id === id);
+  if (!entry) {
+    return false;
+  }
+  if (pinned) {
+    const pinnedCount = history.filter((e) => e.pinned).length;
+    if (!entry.pinned && pinnedCount >= MAX_PINNED_ENTRIES) {
+      return false;
+    }
+    entry.pinned = true;
+  } else {
+    delete entry.pinned;
+  }
+  await writeFile(historyFile, JSON.stringify(history, null, 2), "utf-8");
+  return true;
 }
 
 /** 删除指定历史条目并清理其落盘图片/视频；条目不存在返回 false */
