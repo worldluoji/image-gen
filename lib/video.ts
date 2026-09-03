@@ -29,7 +29,8 @@ export const RESOLUTIONS_BY_DURATION: Record<
 export const VIDEO_PROMPT_MAX_LENGTH = 2000;
 
 // 上游要求首/尾帧图片体积 < 20MB（JPG/JPEG/PNG/WebP）
-export const VIDEO_FRAME_MAX_BYTES = 20 * 1024 * 1024;
+export const VIDEO_FRAME_MAX_MB = 20;
+export const VIDEO_FRAME_MAX_BYTES = VIDEO_FRAME_MAX_MB * 1024 * 1024;
 export const VIDEO_FRAME_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 export const VIDEO_STATUSES = [

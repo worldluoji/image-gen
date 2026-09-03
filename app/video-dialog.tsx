@@ -28,6 +28,8 @@ interface VideoDialogProps {
   error: string | null;
   /** 同批次其他图片的本地路径，可选作尾帧 */
   otherImages: string[];
+  /** 续生模式：上一段视频尾帧的 Data URL，将作为新视频首帧 */
+  continuationFrame?: string;
   onClose: () => void;
   onSubmit: (req: VideoSubmitRequest) => void;
 }
@@ -37,6 +39,7 @@ export function VideoDialog({
   submitting,
   error,
   otherImages,
+  continuationFrame,
   onClose,
   onSubmit,
 }: VideoDialogProps) {
@@ -99,12 +102,29 @@ export function VideoDialog({
           </button>
         </div>
 
+        {continuationFrame && (
+          <div className="flex items-center gap-3 rounded-lg border border-zinc-200 p-2 dark:border-zinc-700">
+            <img
+              src={continuationFrame}
+              alt="上一段视频的最后一帧"
+              className="h-16 w-16 rounded-md object-cover"
+            />
+            <span className="text-sm text-zinc-600 dark:text-zinc-400">
+              新视频将从上一段的最后一帧继续生成
+            </span>
+          </div>
+        )}
+
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           maxLength={VIDEO_PROMPT_MAX_LENGTH}
           rows={4}
-          placeholder="描述画面如何运动，例如：镜头缓缓推近，猫眨了眨眼，雨丝飘落"
+          placeholder={
+            continuationFrame
+              ? "描述画面如何继续运动，例如：镜头继续推近，角色转过身离开"
+              : "描述画面如何运动，例如：镜头缓缓推近，猫眨了眨眼，雨丝飘落"
+          }
           className="rounded-lg border border-zinc-300 bg-white p-3 text-sm text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white"
         />
 

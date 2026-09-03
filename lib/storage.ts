@@ -107,6 +107,65 @@ export async function saveGeneratedFile(
   }
 }
 
+const IMAGE_DATA_URL_RE =
+  /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/;
+
+export function parseImageDataUrl(
+  dataUrl: string,
+): { extension: ImageExtension; bytes: Buffer } {
+  const match = IMAGE_DATA_URL_RE.exec(dataUrl);
+  if (!match) {
+    throw new Error("仅支持 jpeg / png / webp 的 Base64 Data URL");
+  }
+  const extension: ImageExtension = match[1] === "jpeg" ? "jpg" : (match[1] as ImageExtension);
+  return { extension, bytes: Buffer.from(match[2], "base64") };
+}
+
+/** 将图片 Data URL 落盘为规范命名文件，返回 /generated/ 本地路径 */
+export async function saveDataUrlImage(
+  dataUrl: string,
+  timestamp: number = Date.now(),
+  generatedDir: string = GENERATED_DIR,
+  maxBytes: number = Number.POSITIVE_INFINITY,
+): Promise<string> {
+  const { extension, bytes } = parseImageDataUrl(dataUrl);
+  if (bytes.length > maxBytes) {
+    throw new Error(`图片体积超出上限 ${maxBytes} 字节`);
+  }
+  const fileName = `${timestamp}-1.${extension}`;
+  await mkdir(generatedDir, { recursive: true });
+  await writeFile(join(generatedDir, fileName), bytes);
+  return `/generated/${fileName}`;
+}
+
+/** 续生记录：单图批次，图片即上一段视频的尾帧，模型/宽高比/风格继承来源 */
+export function makeContinuationEntry(args: {
+  id: string;
+  createdAt: number;
+  prompt: string;
+  frameLocalUrl: string;
+  task: PendingVideoTask;
+  source: Pick<HistoryEntry, "model" | "aspectRatio" | "style">;
+}): HistoryEntry {
+  return {
+    id: args.id,
+    createdAt: args.createdAt,
+    prompt: args.prompt,
+    ...(args.source.style ? { style: args.source.style } : {}),
+    model: args.source.model,
+    aspectRatio: args.source.aspectRatio,
+    n: 1,
+    images: [
+      {
+        localUrl: args.frameLocalUrl,
+        remoteUrl: "",
+        pendingVideo: args.task,
+      },
+    ],
+    failedCount: 0,
+  };
+}
+
 export function isLocalGeneratedPath(path: string): boolean {
   return GENERATED_FILE_RE.test(path);
 }

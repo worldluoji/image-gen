@@ -13,6 +13,7 @@ import {
   VIDEO_POLL_INTERVAL_MS,
   VIDEO_POLL_TIMEOUT_MS,
 } from "@/lib/video";
+import { extractLastFrame } from "@/lib/video-frame";
 import { VideoDialog, type VideoSubmitRequest } from "./video-dialog";
 import { Lightbox } from "./lightbox";
 import {
@@ -51,6 +52,22 @@ function videoKey(historyId: string, imageIndex: number): string {
   return `${historyId}:${imageIndex}`;
 }
 
+type DialogTarget =
+  | {
+      mode: "image";
+      historyId: string;
+      imageIndex: number;
+      imageFile: string;
+      prompt: string;
+    }
+  | {
+      mode: "continuation";
+      sourceHistoryId: string;
+      frameImage: string;
+      /** 服务端建记录前新条目尚不存在，任务暂挂此键，建记录后迁移 */
+      taskKey: string;
+    };
+
 interface GenerateRequest {
   prompt: string;
   model: Model;
@@ -76,12 +93,8 @@ export default function Home() {
   const [lastRequest, setLastRequest] = useState<GenerateRequest | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [lastHistoryId, setLastHistoryId] = useState<string | null>(null);
-  const [dialogTarget, setDialogTarget] = useState<{
-    historyId: string;
-    imageIndex: number;
-    imageFile: string;
-    prompt: string;
-  } | null>(null);
+  const [dialogTarget, setDialogTarget] = useState<DialogTarget | null>(null);
+  const [extractingVideo, setExtractingVideo] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<{
     images: GeneratedImage[];
     index: number;
@@ -314,6 +327,17 @@ export default function Home() {
     setVideoTasks((prev) => ({ ...prev, [key]: patch }));
   }
 
+  function removeVideoTask(key: string) {
+    setVideoTasks((prev) => {
+      if (!(key in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }
+
   // 进行中的视频任务 = 历史里的 pendingVideo ∪ 本机交互状态；本机状态优先，
   // 因此刷新后能恢复轮询，而本机已有的 done/error 不被覆盖
   const activeVideoTasks = useMemo(() => {
@@ -381,8 +405,92 @@ export default function Home() {
     })();
   }
 
+  async function handleContinueVideo(sourceHistoryId: string, videoUrl: string) {
+    if (extractingVideo) {
+      return;
+    }
+    setError(null);
+    setExtractingVideo(videoUrl);
+    try {
+      const frameImage = await extractLastFrame(videoUrl);
+      setDialogTarget({
+        mode: "continuation",
+        sourceHistoryId,
+        frameImage,
+        taskKey: crypto.randomUUID(),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "截取视频尾帧失败，请重试");
+    } finally {
+      setExtractingVideo(null);
+    }
+  }
+
+  // 续生：服务端截取用的尾帧落盘并新建历史记录，任务键从临时键迁移到「新条目:0」，
+  // 之后刷新恢复、失败重试均走普通图生视频链路
+  function submitContinuation(
+    target: Extract<DialogTarget, { mode: "continuation" }>,
+    req: VideoSubmitRequest,
+  ) {
+    updateVideoTask(target.taskKey, {
+      phase: "submitting",
+      historyId: target.taskKey,
+      imageIndex: 0,
+      req,
+    });
+    void (async () => {
+      try {
+        const res = await fetch("/api/video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...req,
+            continuation: {
+              frameImage: target.frameImage,
+              sourceHistoryId: target.sourceHistoryId,
+            },
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          updateVideoTask(target.taskKey, {
+            phase: "error",
+            historyId: target.taskKey,
+            imageIndex: 0,
+            req,
+            error: data.error ?? `请求失败 (HTTP ${res.status})`,
+          });
+          return;
+        }
+        removeVideoTask(target.taskKey);
+        updateVideoTask(videoKey(data.historyId, data.imageIndex), {
+          phase: "generating",
+          historyId: data.historyId,
+          imageIndex: data.imageIndex,
+          req,
+          taskId: data.taskId,
+          startedAt: Date.now(),
+        });
+        setDialogTarget(null);
+        void refreshHistory();
+      } catch {
+        updateVideoTask(target.taskKey, {
+          phase: "error",
+          historyId: target.taskKey,
+          imageIndex: 0,
+          req,
+          error: "网络错误，请稍后重试",
+        });
+      }
+    })();
+  }
+
   function handleVideoSubmit(req: VideoSubmitRequest) {
     if (!dialogTarget) {
+      return;
+    }
+    if (dialogTarget.mode === "continuation") {
+      submitContinuation(dialogTarget, req);
       return;
     }
     submitVideoTask(
@@ -461,11 +569,15 @@ export default function Home() {
   );
   const skeletonRatio = aspectRatio.replace(":", " / ");
   const dialogTask = dialogTarget
-    ? activeVideoTasks[videoKey(dialogTarget.historyId, dialogTarget.imageIndex)]
+    ? activeVideoTasks[
+        dialogTarget.mode === "continuation"
+          ? dialogTarget.taskKey
+          : videoKey(dialogTarget.historyId, dialogTarget.imageIndex)
+      ]
     : undefined;
   // 同批次其他图片可选作尾帧；结果区批次生成后即入历史，故统一从 history 取
   const dialogOtherImages = useMemo(() => {
-    if (!dialogTarget) {
+    if (!dialogTarget || dialogTarget.mode === "continuation") {
       return [];
     }
     const entry = history.find((e) => e.id === dialogTarget.historyId);
@@ -808,6 +920,7 @@ export default function Home() {
                         }
                         setError(null);
                         setDialogTarget({
+                          mode: "image",
                           historyId: lastHistoryId,
                           imageIndex: i,
                           imageFile: img.localUrl,
@@ -853,13 +966,28 @@ export default function Home() {
                         controls
                         className="w-full rounded-lg border border-zinc-200 dark:border-zinc-800"
                       />
-                      <a
-                        href={task.videoUrl}
-                        download={task.videoUrl.split("/").pop()}
-                        className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                      >
-                        下载视频
-                      </a>
+                      <div className="flex gap-4">
+                        <a
+                          href={task.videoUrl}
+                          download={task.videoUrl.split("/").pop()}
+                          className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                        >
+                          下载视频
+                        </a>
+                        <button
+                          type="button"
+                          disabled={Boolean(extractingVideo) || !lastHistoryId}
+                          onClick={() =>
+                            lastHistoryId &&
+                            void handleContinueVideo(lastHistoryId, task.videoUrl!)
+                          }
+                          className="text-zinc-600 underline hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
+                        >
+                          {extractingVideo === task.videoUrl
+                            ? "提取尾帧…"
+                            : "继续生成"}
+                        </button>
+                      </div>
                     </div>
                   )}
                 </figcaption>
@@ -948,6 +1076,7 @@ export default function Home() {
                         onClick={() => {
                           setError(null);
                           setDialogTarget({
+                            mode: "image",
                             historyId: entry.id,
                             imageIndex: i,
                             imageFile: img.localUrl,
@@ -960,13 +1089,27 @@ export default function Home() {
                       </button>
                     </div>
                     {img.videoUrl && (
-                      <video
-                        src={img.videoUrl}
-                        controls
-                        preload="none"
-                        title="生成的视频"
-                        className="h-20 w-20 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
-                      />
+                      <div className="flex flex-col gap-1">
+                        <video
+                          src={img.videoUrl}
+                          controls
+                          preload="none"
+                          title="生成的视频"
+                          className="h-20 w-20 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
+                        />
+                        <button
+                          type="button"
+                          disabled={Boolean(extractingVideo)}
+                          onClick={() =>
+                            void handleContinueVideo(entry.id, img.videoUrl!)
+                          }
+                          className="text-xs text-zinc-600 underline hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
+                        >
+                          {extractingVideo === img.videoUrl
+                            ? "提取尾帧…"
+                            : "继续生成"}
+                        </button>
+                      </div>
                     )}
                     {!img.videoUrl && (busy || img.pendingVideo) && (
                       <span className="flex h-20 w-20 animate-pulse items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 p-1 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
@@ -1019,10 +1162,13 @@ export default function Home() {
 
       {dialogTarget && (
         <VideoDialog
-          initialPrompt={dialogTarget.prompt}
+          initialPrompt={dialogTarget.mode === "continuation" ? "" : dialogTarget.prompt}
           submitting={dialogTask?.phase === "submitting"}
           error={dialogTask?.phase === "error" ? dialogTask.error ?? null : null}
           otherImages={dialogOtherImages}
+          continuationFrame={
+            dialogTarget.mode === "continuation" ? dialogTarget.frameImage : undefined
+          }
           onClose={() => setDialogTarget(null)}
           onSubmit={handleVideoSubmit}
         />

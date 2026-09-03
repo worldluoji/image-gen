@@ -46,3 +46,11 @@
   - page.tsx：主容器 px-6 py-12 → px-4 py-8 sm:px-6 sm:py-12（窄屏收紧内边距）；历史卡片头部改 flex-wrap、prompt 文本块 flex-1 basis-full sm:basis-auto，使「收藏/载入参数/删除」按钮组窄屏整体换行至描述下方而非挤压描述
   - video-dialog.tsx：弹窗内层加 max-h-[90dvh] overflow-y-auto，矮屏可滚动不溢出；lightbox.tsx：图片与容器 max-h 由 vh 改 dvh（规避移动端地址栏高度变化），底部控件行 flex-wrap justify-center 防横向溢出
   - 纯 CSS/Tailwind utility 改动，无逻辑单元、无新增依赖，不新增单测（宪法第 2 条针对功能/Bug 逻辑，样式改动不适用）；README 同步）
+- 10. 视频续生（继续生成）✅（已完成：
+  - 方案：上游无原生视频续写接口，采用「尾帧作首帧」标准衔接——浏览器 canvas 截取上一段视频最后一帧作为新任务 first_frame_image，普通图生视频链路（校验/模型选择/轮询/落盘/配额）全复用
+  - lib/video-frame.ts（新增）：frameSeekTime 纯函数（mp4 duration 贴边有误差，统一回退 FRAME_SEEK_BACKFILL_SEC=0.1s，非法时长钳 0）+ extractLastFrame（游离 <video> 加载同源 /generated/ mp4，seeked 后 canvas 导出 JPEG q=0.92 Data URL；加载失败/尺寸无效/canvas 不可用显式报错）
+  - lib/storage.ts：parseImageDataUrl（严格正则 jpeg/png/webp，jpeg 归一 jpg 扩展名）、saveDataUrlImage（落盘规范命名 {timestamp}-1.{ext}，超出 maxBytes 抛错且不留文件）、makeContinuationEntry（单图批次：图片=尾帧截图、remoteUrl 置空、pendingVideo 内嵌，model/aspectRatio/style 继承来源记录）；lib/video.ts 提取 VIDEO_FRAME_MAX_MB 消除魔鬼数字
+  - POST /api/video：请求体增 continuation{frameImage,sourceHistoryId}——首帧必须为 Data URL 且 ≤20MB、来源历史必须存在，续生同样可选配尾帧（仅本地上传/历史图路径，无同批图）；顺序为先 createVideoTask 成功再尾帧落盘 + appendHistory（任务创建失败零残留；建任务后写盘失败仅告警，与图生视频挂载失败同策略），响应返回 taskId/historyId/imageIndex/frameUrl；apiKey/inflight/额度检查提取为 acquireQuota 供两模式共用；GET 轮询不改
+  - page.tsx：DialogTarget 联合类型 image|continuation；「继续生成」按钮挂在结果区完成视频下与历史区视频缩略图下（截取中禁用防并发、文案切「提取尾帧…」）；续生任务 submitting 期挂临时 uuid 键（taskKey），POST 成功后迁移至 `${新historyId}:0` 复合键并 refreshHistory——刷新恢复、就地重试、再续生自此均走普通链路；VideoDialog 增 continuationFrame prop（首帧缩略图 + 「从上一段最后一帧继续生成」说明），续生模式提示词留空、otherImages 为空；handleVideoSubmit 按 mode 分发
+  - 测试先行：parseImageDataUrl 11 例（三类合法/jpeg 归一/8 类非法）、saveDataUrlImage 3 例（命名落盘/maxBytes 无残留/非法拒）、makeContinuationEntry 2 例（字段继承/style 缺省省略）、frameSeekTime 8 例（回退/钳位/NaN/Infinity）
+  - 已知边界：首帧 Data URL 上传体积随分辨率增长（1080P JPEG 约几百 KB，远低于 20MB 上限）；续生中间记录与普通批次同样参与收藏/截断/删除（删除会连带清掉尾帧截图与视频，链条自此中断，符合预期）；README 同步）

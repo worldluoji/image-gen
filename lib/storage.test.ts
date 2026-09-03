@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,7 +13,10 @@ import {
   deleteHistoryEntry,
   isLocalGeneratedPath,
   localReferenceToDataUrl,
+  makeContinuationEntry,
+  parseImageDataUrl,
   readHistory,
+  saveDataUrlImage,
   setHistoryPin,
   toLocalImageName,
   toLocalVideoName,
@@ -649,6 +652,125 @@ describe("appendHistory 截断文件清理", () => {
     );
     const history = await readHistory(file);
     expect(history.map((e) => e.id)).toEqual(["b"]);
+  });
+});
+
+const SAMPLE_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+const SAMPLE_BASE64 = SAMPLE_BYTES.toString("base64");
+
+describe("parseImageDataUrl", () => {
+  const validCases = [
+    { name: "png", mime: "image/png", ext: "png" },
+    { name: "jpeg 归一为 jpg", mime: "image/jpeg", ext: "jpg" },
+    { name: "webp", mime: "image/webp", ext: "webp" },
+  ];
+  for (const c of validCases) {
+    it(c.name, () => {
+      const { extension, bytes } = parseImageDataUrl(
+        `data:${c.mime};base64,${SAMPLE_BASE64}`,
+      );
+      expect(extension).toBe(c.ext);
+      expect(bytes.equals(SAMPLE_BYTES)).toBe(true);
+    });
+  }
+
+  const invalidCases = [
+    { name: "http URL", dataUrl: "https://example.com/a.png" },
+    { name: "gif", dataUrl: `data:image/gif;base64,${SAMPLE_BASE64}` },
+    { name: "svg", dataUrl: `data:image/svg+xml;base64,${SAMPLE_BASE64}` },
+    { name: "视频", dataUrl: `data:video/mp4;base64,${SAMPLE_BASE64}` },
+    { name: "缺 base64 前缀", dataUrl: "data:image/png;charset=utf-8,abc" },
+    { name: "空载荷", dataUrl: "data:image/png;base64," },
+    { name: "非法 base64 字符", dataUrl: "data:image/png;base64,a!b*" },
+    { name: "空字符串", dataUrl: "" },
+  ];
+  for (const c of invalidCases) {
+    it(`拒绝：${c.name}`, () => {
+      expect(() => parseImageDataUrl(c.dataUrl)).toThrow(/Base64/);
+    });
+  }
+});
+
+describe("saveDataUrlImage", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "image-gen-dataurl-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("写入规范命名文件并返回本地路径", async () => {
+    const localUrl = await saveDataUrlImage(
+      `data:image/jpeg;base64,${SAMPLE_BASE64}`,
+      TIMESTAMP,
+      dir,
+    );
+    expect(localUrl).toBe(`/generated/${TIMESTAMP}-1.jpg`);
+    expect((await readFile(join(dir, `${TIMESTAMP}-1.jpg`))).equals(SAMPLE_BYTES)).toBe(true);
+  });
+
+  it("超出 maxBytes 时抛错且不留文件", async () => {
+    await expect(
+      saveDataUrlImage(
+        `data:image/png;base64,${SAMPLE_BASE64}`,
+        TIMESTAMP,
+        dir,
+        SAMPLE_BYTES.length - 1,
+      ),
+    ).rejects.toThrow(/超出/);
+    expect(await fileExists(join(dir, `${TIMESTAMP}-1.png`))).toBe(false);
+  });
+
+  it("非法 Data URL 抛错", async () => {
+    await expect(
+      saveDataUrlImage("data:image/gif;base64," + SAMPLE_BASE64, TIMESTAMP, dir),
+    ).rejects.toThrow(/Base64/);
+  });
+});
+
+describe("makeContinuationEntry", () => {
+  it("以尾帧为新图创建单图记录，模型/宽高比/风格继承来源", () => {
+    const entry = makeContinuationEntry({
+      id: "new-1",
+      createdAt: TIMESTAMP,
+      prompt: "镜头缓缓拉远",
+      frameLocalUrl: `/generated/${TIMESTAMP}-1.jpg`,
+      task: { taskId: "t1", startedAt: TIMESTAMP },
+      source: makeEntry({ id: "src", model: "image-01", aspectRatio: "16:9", style: "水彩" }),
+    });
+    expect(entry).toEqual({
+      id: "new-1",
+      createdAt: TIMESTAMP,
+      prompt: "镜头缓缓拉远",
+      style: "水彩",
+      model: "image-01",
+      aspectRatio: "16:9",
+      n: 1,
+      images: [
+        {
+          localUrl: `/generated/${TIMESTAMP}-1.jpg`,
+          remoteUrl: "",
+          pendingVideo: { taskId: "t1", startedAt: TIMESTAMP },
+        },
+      ],
+      failedCount: 0,
+    });
+  });
+
+  it("来源无风格时新记录不带 style 字段", () => {
+    const entry = makeContinuationEntry({
+      id: "new-2",
+      createdAt: TIMESTAMP,
+      prompt: "",
+      frameLocalUrl: `/generated/${TIMESTAMP}-1.jpg`,
+      task: { taskId: "t2", startedAt: TIMESTAMP },
+      source: makeEntry({ id: "src" }),
+    });
+    expect(entry.style).toBeUndefined();
+    expect("style" in entry).toBe(false);
   });
 });
 
