@@ -20,3 +20,10 @@
   - 图片放大灯箱：新增 app/lightbox.tsx（零依赖），结果图与历史缩略图点击打开，←/→/ESC 键盘导航、背景点击关闭，灯箱内提供「作为参考图」「下载」；历史缩略图点击语义由「作参考」改为放大，作参考动作移入灯箱
   - 图生视频任务刷新恢复：GeneratedImage 增 pendingVideo{taskId,startedAt}；POST /api/video 接收 historyId/imageIndex 前置校验并在创建成功后挂载、Success 挂载视频时清除、Fail 时清除；前端轮询键改为 `${historyId}:${imageIndex}` 复合键，activeVideoTasks 以 useMemo 从历史 pendingVideo 派生并与本机状态合并（本机优先），刷新后自动续轮询；历史区显示「视频生成中…」占位徽标；顺带修复新批次生成会清空旧批次视频状态的既有 bug（删除 setVideoTasks({})）
   - 测试先行：lib/storage.test.ts 新增 attachVideoTaskToHistory / clearVideoTaskFromHistory / 挂载清 pendingVideo 表格用例；lib/minimax.test.ts 新增 STYLE_SAMPLE_IMAGES 索引映射与 ASCII 文件名用例；tsconfig 启用 allowImportingTsExtensions 以支持 Node 22 原生运行 .mts 脚本）
+- 6. 产品体验优化二期 ✅（已完成：
+  - 历史删除与文件清理：lib/storage.ts 新增 GENERATED_MEDIA_FILE_RE（含 mp4，仅用于清理；与参考图正则分离）、deleteHistoryEntry（移除条目→写回→清理落盘，ENOENT 容忍、其余错误告警吞掉）；appendHistory 增 generatedDir 参数，50 条截断时同步删除被淘汰批次文件（先写后删，崩溃最坏留孤儿文件不留碎引用记录）；新增 DELETE /api/history/[id]（Next 16 Promise params），条目不存在返回 404
+  - 历史删除 UI：条目「删除」按钮 window.confirm 二次确认，成功后刷新历史、按 `${id}:` 前缀剪枝本地视频任务；删除当前批次（lastHistoryId）时撤下结果区
+  - 描述辅助（纯前端零成本）：lib/prompt-templates.ts 提供 PROMPT_TEMPLATES 六个中文示例模板 + recentPrompts(history, limit=RECENT_PROMPTS_MAX)（trim、过滤空白、最新在前去重）；输入框下方「示例」「最近」两行 chip，点击总是替换 prompt，loading 时禁用；AI 润色（LLM 扩写）留待后续
+  - 就地重试：图片部分失败时结果区头部「重试失败的 N 张」以同参数 n=failedCount 重新生成；VideoTask 增 req 字段记录弹窗提交参数，视频 error 态渲染「重试」按钮，handleVideoSubmit 重构为 submitVideoTask(historyId, imageIndex, req, imageFile) 供弹窗与重试共用（服务端 Fail 已清 pendingVideo，刷新后无 error 态 derived 任务）
+  - 测试先行：storage 13 例（MEDIA_RE 表、deleteHistoryEntry 四态、截断清理两态）+ prompt-templates 表驱动（去重/顺序/limit/默认值/模板长度唯一性）
+  - 已知边界：删除与轮询并发无锁（个人工具接受）；二次生成视频覆盖旧 videoUrl 时旧 mp4 文件泄漏（既有问题，范围外）；README 同步）

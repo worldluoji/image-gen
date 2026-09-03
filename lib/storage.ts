@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AspectRatio, Model } from "./minimax";
 
@@ -19,6 +19,10 @@ const EXTENSION_MIME: Record<ImageExtension, string> = {
 
 // 严格匹配 <时间戳>-<序号>.<扩展名>，天然排除路径穿越与非法字符
 const GENERATED_FILE_RE = /^\/generated\/(\d+-\d+\.(?:png|jpe?g|webp))$/;
+
+// 媒体版含 mp4，仅用于文件清理；参考图转换绝不能接受视频，故与上面分开
+export const GENERATED_MEDIA_FILE_RE =
+  /^\/generated\/(\d+-\d+\.(?:png|jpe?g|webp|mp4))$/;
 
 export const GENERATED_VIDEO_EXTENSION = "mp4";
 
@@ -136,10 +140,41 @@ export async function readHistory(historyFile: string = HISTORY_FILE): Promise<H
   }
 }
 
+function collectEntryFileNames(entry: HistoryEntry): string[] {
+  const names: string[] = [];
+  for (const img of entry.images) {
+    for (const path of [img.localUrl, img.videoUrl]) {
+      const match = path ? GENERATED_MEDIA_FILE_RE.exec(path) : null;
+      if (match) {
+        names.push(match[1]);
+      }
+    }
+  }
+  return names;
+}
+
+/** 删除落盘媒体文件：缺失容忍，失败仅告警——清理绝不能反噬已完成的历史写入 */
+async function removeGeneratedFiles(
+  fileNames: string[],
+  generatedDir: string,
+  context: string,
+): Promise<void> {
+  for (const name of fileNames) {
+    try {
+      await unlink(join(generatedDir, name));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.warn(`${context}：文件 ${name} 清理失败`, err);
+      }
+    }
+  }
+}
+
 export async function appendHistory(
   entry: HistoryEntry,
   historyFile: string = HISTORY_FILE,
   maxEntries: number = HISTORY_MAX_ENTRIES,
+  generatedDir: string = GENERATED_DIR,
 ): Promise<HistoryEntry[]> {
   let existing: HistoryEntry[] = [];
   try {
@@ -147,10 +182,41 @@ export async function appendHistory(
   } catch {
     // 损坏文件不阻断新记录，直接重建
   }
-  const next = [entry, ...existing].slice(0, maxEntries);
+  const combined = [entry, ...existing];
+  const next = combined.slice(0, maxEntries);
   await mkdir(join(historyFile, ".."), { recursive: true });
   await writeFile(historyFile, JSON.stringify(next, null, 2), "utf-8");
+  // 先写历史后删文件：崩溃最坏留孤儿文件，反序则留下引用碎图的记录
+  const truncated = combined.slice(maxEntries);
+  if (truncated.length > 0) {
+    await removeGeneratedFiles(
+      truncated.flatMap(collectEntryFileNames),
+      generatedDir,
+      "历史截断",
+    );
+  }
   return next;
+}
+
+/** 删除指定历史条目并清理其落盘图片/视频；条目不存在返回 false */
+export async function deleteHistoryEntry(
+  historyId: string,
+  historyFile: string = HISTORY_FILE,
+  generatedDir: string = GENERATED_DIR,
+): Promise<boolean> {
+  const history = await readHistory(historyFile);
+  const index = history.findIndex((e) => e.id === historyId);
+  if (index < 0) {
+    return false;
+  }
+  const [removed] = history.splice(index, 1);
+  await writeFile(historyFile, JSON.stringify(history, null, 2), "utf-8");
+  await removeGeneratedFiles(
+    collectEntryFileNames(removed),
+    generatedDir,
+    "历史删除",
+  );
+  return true;
 }
 
 /** 找到指定历史条目的指定图片并修改，命中才写回文件；找不到或序号非法时返回 false，不抛错 */

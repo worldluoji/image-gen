@@ -29,6 +29,7 @@ import {
   type Model,
 } from "@/lib/minimax";
 import type { GeneratedImage, HistoryEntry } from "@/lib/storage";
+import { PROMPT_TEMPLATES, recentPrompts } from "@/lib/prompt-templates";
 
 const CUSTOM_STYLE = "自定义";
 
@@ -40,6 +41,8 @@ interface VideoTask {
   startedAt?: number;
   videoUrl?: string;
   error?: string;
+  /** 提交时的弹窗参数，失败后就地重试复用 */
+  req?: VideoSubmitRequest;
 }
 
 // 视频任务以「历史条目:图片序号」为键，刷新后可从历史播种恢复，多批次互不覆盖
@@ -202,6 +205,41 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  async function handleDeleteEntry(entry: HistoryEntry) {
+    if (!window.confirm("删除这批生成记录及其文件？不可恢复。")) {
+      return;
+    }
+    setError(null);
+    try {
+      const res = await fetch(`/api/history/${entry.id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? `删除失败 (HTTP ${res.status})`);
+        return;
+      }
+      const prefix = `${entry.id}:`;
+      setVideoTasks((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (key.startsWith(prefix)) {
+            delete next[key];
+          }
+        }
+        return next;
+      });
+      // 删掉的正是当前批次：撤下结果区，保持记录与展示一致
+      if (entry.id === lastHistoryId) {
+        setLastHistoryId(null);
+        setImages([]);
+        setFailedCount(0);
+        setDialogIndex(null);
+      }
+      void refreshHistory();
+    } catch {
+      setError("网络错误，请稍后重试");
+    }
+  }
+
   function updateVideoTask(key: string, patch: VideoTask) {
     setVideoTasks((prev) => ({ ...prev, [key]: patch }));
   }
@@ -226,25 +264,20 @@ export default function Home() {
     return { ...derived, ...videoTasks };
   }, [history, videoTasks]);
 
-  function handleVideoSubmit(req: VideoSubmitRequest) {
-    if (dialogIndex === null || !lastHistoryId) {
-      return;
-    }
-    const historyId = lastHistoryId;
-    const imageIndex = dialogIndex;
+  function submitVideoTask(
+    historyId: string,
+    imageIndex: number,
+    req: VideoSubmitRequest,
+    imageFile: string,
+  ) {
     const key = videoKey(historyId, imageIndex);
-    updateVideoTask(key, { phase: "submitting", historyId, imageIndex });
+    updateVideoTask(key, { phase: "submitting", historyId, imageIndex, req });
     void (async () => {
       try {
         const res = await fetch("/api/video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            imageFile: images[imageIndex].localUrl,
-            historyId,
-            imageIndex,
-            ...req,
-          }),
+          body: JSON.stringify({ imageFile, historyId, imageIndex, ...req }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -252,6 +285,7 @@ export default function Home() {
             phase: "error",
             historyId,
             imageIndex,
+            req,
             error: data.error ?? `请求失败 (HTTP ${res.status})`,
           });
         } else {
@@ -259,6 +293,7 @@ export default function Home() {
             phase: "generating",
             historyId,
             imageIndex,
+            req,
             taskId: data.taskId,
             startedAt: Date.now(),
           });
@@ -269,10 +304,18 @@ export default function Home() {
           phase: "error",
           historyId,
           imageIndex,
+          req,
           error: "网络错误，请稍后重试",
         });
       }
     })();
+  }
+
+  function handleVideoSubmit(req: VideoSubmitRequest) {
+    if (dialogIndex === null || !lastHistoryId) {
+      return;
+    }
+    submitVideoTask(lastHistoryId, dialogIndex, req, images[dialogIndex].localUrl);
   }
 
   const inflightRef = useRef<Set<string>>(new Set());
@@ -331,6 +374,7 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [activeVideoTasks, refreshHistory]);
 
+  const recent = recentPrompts(history);
   const skeletonRatio = aspectRatio.replace(":", " / ");
   const dialogTask =
     dialogIndex !== null && lastHistoryId
@@ -352,6 +396,40 @@ export default function Home() {
           placeholder="描述你想生成的图片，例如：一只戴帽子的猫走在东京街头，赛博朋克风格"
           className="rounded-lg border border-zinc-300 bg-white p-3 text-sm text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
         />
+
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-zinc-500">示例</span>
+            {PROMPT_TEMPLATES.map((t) => (
+              <button
+                key={t.label}
+                type="button"
+                disabled={loading}
+                onClick={() => setPrompt(t.prompt)}
+                className="rounded-full border border-zinc-300 px-2.5 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {recent.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-zinc-500">最近</span>
+              {recent.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  disabled={loading}
+                  title={p}
+                  onClick={() => setPrompt(p)}
+                  className="max-w-56 truncate rounded-full border border-zinc-300 px-2.5 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="flex flex-wrap gap-4">
           <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
@@ -559,19 +637,33 @@ export default function Home() {
                 ? `成功生成 ${images.length} 张，${failedCount} 张失败`
                 : `已生成 ${images.length} 张`}
             </p>
-            <button
-              type="button"
-              onClick={handleRegenerate}
-              className="rounded-full border border-zinc-300 px-4 py-1.5 text-sm text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
-              再创作一批
-            </button>
+            <div className="flex gap-2">
+              {failedCount > 0 && lastRequest && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void runGeneration({ ...lastRequest, n: failedCount })
+                  }
+                  className="rounded-full border border-zinc-300 px-4 py-1.5 text-sm text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  重试失败的 {failedCount} 张
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleRegenerate}
+                className="rounded-full border border-zinc-300 px-4 py-1.5 text-sm text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                再创作一批
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {images.map((img, i) => {
               const task = lastHistoryId
                 ? activeVideoTasks[videoKey(lastHistoryId, i)]
                 : undefined;
+              const videoReq = task?.phase === "error" ? task.req : undefined;
               return (
               <figure key={`${img.localUrl}-${i}`} className="flex flex-col gap-2">
                 <img
@@ -618,7 +710,25 @@ export default function Home() {
                     <span className="text-zinc-500">视频生成中，约需几分钟…</span>
                   )}
                   {task?.phase === "error" && (
-                    <span className="text-red-600 dark:text-red-400">{task.error}</span>
+                    <span className="flex items-center gap-2 text-red-600 dark:text-red-400">
+                      {task.error}
+                      {videoReq && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            submitVideoTask(
+                              task.historyId,
+                              task.imageIndex,
+                              videoReq,
+                              img.localUrl,
+                            )
+                          }
+                          className="underline hover:text-red-800 dark:hover:text-red-200"
+                        >
+                          重试
+                        </button>
+                      )}
+                    </span>
                   )}
                   {task?.phase === "done" && task.videoUrl && (
                     <div className="flex flex-col gap-1">
@@ -664,13 +774,22 @@ export default function Home() {
                     {entry.aspectRatio} · {entry.images.length} 张
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleLoadEntry(entry)}
-                  className="shrink-0 rounded-md border border-zinc-300 px-3 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
-                >
-                  载入参数
-                </button>
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleLoadEntry(entry)}
+                    className="rounded-md border border-zinc-300 px-3 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  >
+                    载入参数
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteEntry(entry)}
+                    className="rounded-md border border-zinc-300 px-3 py-1 text-xs text-zinc-600 transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-red-900 dark:hover:bg-red-950 dark:hover:text-red-300"
+                  >
+                    删除
+                  </button>
+                </div>
               </div>
               <div className="flex flex-wrap gap-2">
                 {entry.images.map((img, i) => (

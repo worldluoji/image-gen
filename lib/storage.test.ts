@@ -1,13 +1,15 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  GENERATED_MEDIA_FILE_RE,
   HISTORY_MAX_ENTRIES,
   appendHistory,
   attachVideoTaskToHistory,
   attachVideoToHistory,
   clearVideoTaskFromHistory,
+  deleteHistoryEntry,
   isLocalGeneratedPath,
   localReferenceToDataUrl,
   readHistory,
@@ -15,6 +17,15 @@ import {
   toLocalVideoName,
   type HistoryEntry,
 } from "./storage";
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const TIMESTAMP = 1700000000000;
 
@@ -463,5 +474,178 @@ describe("clearVideoTaskFromHistory", () => {
   it("imageIndex 越界时返回 false", async () => {
     await appendHistory(makeEntry({ id: "h1" }), file, 50);
     expect(await clearVideoTaskFromHistory("h1", 3, file)).toBe(false);
+  });
+});
+
+describe("GENERATED_MEDIA_FILE_RE", () => {
+  const cases = [
+    { name: "图片文件", path: "/generated/1700000000000-1.png", want: true },
+    { name: "jpg/jpeg/webp", path: "/generated/1-1.jpeg", want: true },
+    { name: "视频文件 mp4", path: "/generated/1700000000000-1.mp4", want: true },
+    { name: "非规范命名", path: "/generated/1.png", want: false },
+    { name: "路径穿越", path: "/generated/../secret.png", want: false },
+    { name: "其他目录", path: "/other/1-1.mp4", want: false },
+    { name: "远程 URL", path: "https://cdn.example.com/1-1.mp4", want: false },
+  ];
+  for (const c of cases) {
+    it(c.name, () => {
+      expect(GENERATED_MEDIA_FILE_RE.test(c.path)).toBe(c.want);
+    });
+  }
+});
+
+describe("deleteHistoryEntry", () => {
+  let dir: string;
+  let file: string;
+  let genDir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "image-gen-del-"));
+    file = join(dir, "history.json");
+    genDir = join(dir, "generated");
+    await mkdir(genDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("删除条目并清理其图片与视频文件，其余条目顺序不变", async () => {
+    await appendHistory(
+      makeEntry({
+        id: "old",
+        images: [
+          { localUrl: "/generated/100-1.png", remoteUrl: "https://x/1.png" },
+        ],
+      }),
+      file,
+      50,
+      genDir,
+    );
+    await appendHistory(
+      makeEntry({
+        id: "target",
+        images: [
+          {
+            localUrl: "/generated/200-1.png",
+            remoteUrl: "https://x/2.png",
+            videoUrl: "/generated/201-1.mp4",
+          },
+        ],
+      }),
+      file,
+      50,
+      genDir,
+    );
+    await writeFile(join(genDir, "200-1.png"), "img");
+    await writeFile(join(genDir, "201-1.mp4"), "vid");
+    await writeFile(join(genDir, "100-1.png"), "keep");
+
+    expect(await deleteHistoryEntry("target", file, genDir)).toBe(true);
+    const history = await readHistory(file);
+    expect(history.map((e) => e.id)).toEqual(["old"]);
+    expect(await fileExists(join(genDir, "200-1.png"))).toBe(false);
+    expect(await fileExists(join(genDir, "201-1.mp4"))).toBe(false);
+    expect(await fileExists(join(genDir, "100-1.png"))).toBe(true);
+  });
+
+  it("文件缺失（ENOENT）时容忍，不抛错", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50, genDir);
+    expect(
+      await deleteHistoryEntry("h1", file, join(genDir, "not-exist")),
+    ).toBe(true);
+  });
+
+  it("非规范命名的路径不触发删除", async () => {
+    await appendHistory(
+      makeEntry({
+        id: "h1",
+        images: [
+          { localUrl: "/generated/1.png", remoteUrl: "https://x/1.png" },
+        ],
+      }),
+      file,
+      50,
+      genDir,
+    );
+    await writeFile(join(genDir, "1.png"), "keep");
+    expect(await deleteHistoryEntry("h1", file, genDir)).toBe(true);
+    expect(await fileExists(join(genDir, "1.png"))).toBe(true);
+  });
+
+  it("id 不存在时返回 false，历史与文件均不动", async () => {
+    await appendHistory(makeEntry({ id: "h1" }), file, 50, genDir);
+    await writeFile(join(genDir, "200-1.png"), "keep");
+    const before = await readHistory(file);
+    expect(await deleteHistoryEntry("missing", file, genDir)).toBe(false);
+    expect(await readHistory(file)).toEqual(before);
+    expect(await fileExists(join(genDir, "200-1.png"))).toBe(true);
+  });
+});
+
+describe("appendHistory 截断文件清理", () => {
+  let dir: string;
+  let file: string;
+  let genDir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "image-gen-trunc-"));
+    file = join(dir, "history.json");
+    genDir = join(dir, "generated");
+    await mkdir(genDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("被淘汰条目的落盘文件被删除，保留条目文件完好", async () => {
+    await writeFile(join(genDir, "100-1.png"), "oldest");
+    await writeFile(join(genDir, "101-1.mp4"), "oldest-video");
+    await writeFile(join(genDir, "200-1.png"), "kept");
+    await appendHistory(
+      makeEntry({
+        id: "e1",
+        images: [
+          {
+            localUrl: "/generated/100-1.png",
+            remoteUrl: "https://x/1.png",
+            videoUrl: "/generated/101-1.mp4",
+          },
+        ],
+      }),
+      file,
+      2,
+      genDir,
+    );
+    await appendHistory(makeEntry({ id: "e2" }), file, 2, genDir);
+    await appendHistory(
+      makeEntry({
+        id: "e3",
+        images: [
+          { localUrl: "/generated/200-1.png", remoteUrl: "https://x/2.png" },
+        ],
+      }),
+      file,
+      2,
+      genDir,
+    );
+    const history = await readHistory(file);
+    expect(history.map((e) => e.id)).toEqual(["e3", "e2"]);
+    expect(await fileExists(join(genDir, "100-1.png"))).toBe(false);
+    expect(await fileExists(join(genDir, "101-1.mp4"))).toBe(false);
+    expect(await fileExists(join(genDir, "200-1.png"))).toBe(true);
+  });
+
+  it("清理目录不存在时不抛错，不影响写入", async () => {
+    await appendHistory(makeEntry({ id: "a" }), file, 1, genDir);
+    await appendHistory(
+      makeEntry({ id: "b" }),
+      file,
+      1,
+      join(genDir, "not-exist"),
+    );
+    const history = await readHistory(file);
+    expect(history.map((e) => e.id)).toEqual(["b"]);
   });
 });
