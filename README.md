@@ -26,7 +26,7 @@
 1. 环境要求：Node.js >= 22，pnpm
 2. 安装依赖：`pnpm install`
 3. 配置密钥：复制 `.env.example` 为 `.env.local`，填入 `MINIMAX_API_KEY`
-4. 开发运行：`pnpm dev`，打开 http://localhost:3000
+4. 开发运行：`pnpm dev`，打开 http://localhost:4001
 
 ## 常用命令
 
