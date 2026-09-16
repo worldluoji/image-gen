@@ -19,6 +19,7 @@ import { Lightbox } from "./lightbox";
 import {
   ASPECT_RATIOS,
   MODELS,
+  MODEL_DESCRIPTIONS,
   N_MAX,
   N_MIN,
   PROMPT_MAX_LENGTH,
@@ -34,6 +35,9 @@ import type { UsageDay } from "@/lib/usage";
 import { PROMPT_TEMPLATES, recentPrompts } from "@/lib/prompt-templates";
 
 const CUSTOM_STYLE = "自定义";
+const ELAPSED_TICK_MS = 1000;
+// 历史区首屏批次数，点「加载更多」逐页追加
+const HISTORY_PAGE_SIZE = 10;
 
 interface VideoTask {
   phase: "submitting" | "generating" | "done" | "error";
@@ -86,7 +90,10 @@ export default function Home() {
   const [customStyle, setCustomStyle] = useState("");
   const [refImage, setRefImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [elapsedSec, setElapsedSec] = useState(0);
   const [polishLoading, setPolishLoading] = useState(false);
+  // 润色前原文，非 null 时展示「撤销润色」；任何手动/模板改写均清除
+  const [prePolishPrompt, setPrePolishPrompt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [failedCount, setFailedCount] = useState(0);
@@ -98,7 +105,9 @@ export default function Home() {
   const [lightbox, setLightbox] = useState<{
     images: GeneratedImage[];
     index: number;
+    historyId: string | null;
   } | null>(null);
+  const [historyVisible, setHistoryVisible] = useState(HISTORY_PAGE_SIZE);
   const [videoTasks, setVideoTasks] = useState<Record<string, VideoTask>>({});
   const [usage, setUsage] = useState<UsageDay | null>(null);
 
@@ -141,6 +150,32 @@ export default function Home() {
     void refreshUsage();
   }, [refreshUsage]);
 
+  function updatePrompt(value: string) {
+    setPrompt(value);
+    setPrePolishPrompt(null);
+  }
+
+  useEffect(() => {
+    if (!loading) {
+      return;
+    }
+    const timer = setInterval(
+      () => setElapsedSec((s) => s + 1),
+      ELAPSED_TICK_MS,
+    );
+    return () => clearInterval(timer);
+  }, [loading]);
+
+  // 生成结束（有结果）时自动定位到结果区：表单较长，结果常落在首屏之外
+  useEffect(() => {
+    if (!loading && images.length > 0) {
+      resultsRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, [loading, images]);
+
   function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
     setError(null);
     const file = e.target.files?.[0];
@@ -167,6 +202,7 @@ export default function Home() {
   async function runGeneration(request: GenerateRequest) {
     setError(null);
     setLoading(true);
+    setElapsedSec(0);
     setImages([]);
     setFailedCount(0);
     setLastRequest(request);
@@ -231,6 +267,7 @@ export default function Home() {
       if (!res.ok) {
         setError(data.error ?? `请求失败 (HTTP ${res.status})`);
       } else {
+        setPrePolishPrompt(prompt);
         setPrompt(data.prompt);
         void refreshUsage();
       }
@@ -249,10 +286,12 @@ export default function Home() {
 
   function handleLoadEntry(entry: HistoryEntry) {
     setError(null);
-    setPrompt(entry.prompt);
+    updatePrompt(entry.prompt);
     setModel(entry.model);
     setAspectRatio(entry.aspectRatio);
     setN(entry.n);
+    // 旧记录无参考图字段，也要清掉当前残留，避免「以为带了参考图」
+    setRefImage(entry.referenceImage ?? null);
     if (entry.style && (STYLE_PRESETS as readonly string[]).includes(entry.style)) {
       setStyleChoice(entry.style);
     } else if (entry.style) {
@@ -357,6 +396,28 @@ export default function Home() {
     }
     return { ...derived, ...videoTasks };
   }, [history, videoTasks]);
+
+  function openVideoDialog(historyId: string, imageIndex: number) {
+    const entry = history.find((e) => e.id === historyId);
+    const img = entry?.images[imageIndex];
+    if (!entry || !img) {
+      setError("该图片尚未入库，无法生成视频");
+      return;
+    }
+    const task = activeVideoTasks[videoKey(historyId, imageIndex)];
+    if (task?.phase === "submitting" || task?.phase === "generating") {
+      setError("该图片的视频仍在生成中，请稍候");
+      return;
+    }
+    setError(null);
+    setDialogTarget({
+      mode: "image",
+      historyId,
+      imageIndex,
+      imageFile: img.localUrl,
+      prompt: entry.prompt,
+    });
+  }
 
   function submitVideoTask(
     historyId: string,
@@ -501,6 +562,7 @@ export default function Home() {
     );
   }
 
+  const resultsRef = useRef<HTMLDivElement>(null);
   const inflightRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -598,14 +660,37 @@ export default function Home() {
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <textarea
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={(e) => updatePrompt(e.target.value)}
           maxLength={PROMPT_MAX_LENGTH}
           rows={4}
           placeholder="描述你想生成的图片，例如：一只戴帽子的猫走在东京街头，赛博朋克风格"
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              e.currentTarget.form?.requestSubmit();
+            }
+          }}
           className="rounded-lg border border-zinc-300 bg-white p-3 text-sm text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
         />
 
-        <div className="-mt-2 flex justify-end">
+        <div className="-mt-2 flex items-center justify-between">
+          <span className="text-xs text-zinc-400">
+            {prompt.length}/{PROMPT_MAX_LENGTH} · Ctrl/⌘+Enter 生成
+          </span>
+          <div className="flex gap-2">
+          {prePolishPrompt !== null && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setPrompt(prePolishPrompt);
+                setPrePolishPrompt(null);
+              }}
+              className="rounded-full border border-zinc-300 px-3 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            >
+              撤销润色
+            </button>
+          )}
           <button
             type="button"
             disabled={!prompt.trim() || loading || polishLoading}
@@ -614,6 +699,7 @@ export default function Home() {
           >
             {polishLoading ? "润色中…" : "AI 润色"}
           </button>
+          </div>
         </div>
 
         <div className="flex flex-col gap-2">
@@ -624,7 +710,7 @@ export default function Home() {
                 key={t.label}
                 type="button"
                 disabled={loading}
-                onClick={() => setPrompt(t.prompt)}
+                onClick={() => updatePrompt(t.prompt)}
                 className="rounded-full border border-zinc-300 px-2.5 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
               >
                 {t.label}
@@ -640,7 +726,7 @@ export default function Home() {
                   type="button"
                   disabled={loading}
                   title={p}
-                  onClick={() => setPrompt(p)}
+                  onClick={() => updatePrompt(p)}
                   className="max-w-56 truncate rounded-full border border-zinc-300 px-2.5 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
                 >
                   {p}
@@ -660,7 +746,7 @@ export default function Home() {
             >
               {MODELS.map((m) => (
                 <option key={m} value={m}>
-                  {m}
+                  {m} · {MODEL_DESCRIPTIONS[m]}
                 </option>
               ))}
             </select>
@@ -827,29 +913,47 @@ export default function Home() {
       </form>
 
       {error && (
-        <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-          {error}
-        </p>
+        <div
+          role="alert"
+          className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center px-4 pt-4"
+        >
+          <div className="pointer-events-auto flex max-w-xl items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+            <span className="min-w-0 break-words">{error}</span>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              aria-label="关闭提示"
+              className="shrink-0 text-red-400 hover:text-red-700 dark:hover:text-red-200"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
       )}
 
       {loading && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {Array.from({ length: n }, (_, i) => (
-            <div
-              key={i}
-              style={{ aspectRatio: skeletonRatio }}
-              className="animate-pulse rounded-lg bg-zinc-200 dark:bg-zinc-800"
-            >
-              <div className="flex h-full items-center justify-center text-sm text-zinc-400 dark:text-zinc-600">
-                第 {i + 1} 张生成中…
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {Array.from({ length: n }, (_, i) => (
+              <div
+                key={i}
+                style={{ aspectRatio: skeletonRatio }}
+                className="animate-pulse rounded-lg bg-zinc-200 dark:bg-zinc-800"
+              >
+                <div className="flex h-full items-center justify-center text-sm text-zinc-400 dark:text-zinc-600">
+                  第 {i + 1} 张生成中…
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
+          <p className="text-center text-xs text-zinc-500" role="status">
+            已等待 {elapsedSec}s · 完成后将自动定位到结果
+          </p>
         </div>
       )}
 
       {!loading && images.length > 0 && (
-        <div className="flex flex-col gap-4">
+        <div ref={resultsRef} className="flex flex-col gap-4">
           <div className="flex items-center justify-between">
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
               {failedCount > 0
@@ -888,7 +992,9 @@ export default function Home() {
                 <img
                   src={img.localUrl}
                   alt={`生成图片 ${i + 1}`}
-                  onClick={() => setLightbox({ images, index: i })}
+                  onClick={() =>
+                    setLightbox({ images, index: i, historyId: lastHistoryId })
+                  }
                   className="w-full cursor-zoom-in rounded-lg border border-zinc-200 dark:border-zinc-800"
                 />
                 <figcaption className="flex flex-col gap-2 text-sm">
@@ -1003,7 +1109,7 @@ export default function Home() {
           <h2 className="text-lg font-semibold tracking-tight text-zinc-800 dark:text-zinc-200">
             历史生成
           </h2>
-          {displayHistory.map((entry) => (
+          {displayHistory.slice(0, historyVisible).map((entry) => (
             <div
               key={entry.id}
               className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
@@ -1059,7 +1165,11 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={() =>
-                          setLightbox({ images: entry.images, index: i })
+                          setLightbox({
+                            images: entry.images,
+                            index: i,
+                            historyId: entry.id,
+                          })
                         }
                         title="点击放大"
                         className="group relative"
@@ -1138,6 +1248,15 @@ export default function Home() {
               </div>
             </div>
           ))}
+          {displayHistory.length > historyVisible && (
+            <button
+              type="button"
+              onClick={() => setHistoryVisible((v) => v + HISTORY_PAGE_SIZE)}
+              className="self-center rounded-full border border-zinc-300 px-4 py-1.5 text-sm text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              加载更多（还有 {displayHistory.length - historyVisible} 批）
+            </button>
+          )}
         </section>
       )}
 
@@ -1157,6 +1276,14 @@ export default function Home() {
             handleUseAsReference(url);
             setLightbox(null);
           }}
+          onGenerateVideo={
+            lightbox.historyId
+              ? (index) => {
+                  openVideoDialog(lightbox.historyId!, index);
+                  setLightbox(null);
+                }
+              : undefined
+          }
         />
       )}
 

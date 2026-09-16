@@ -55,6 +55,8 @@ export interface HistoryEntry {
   failedCount: number;
   /** 收藏置顶：不参与截断，渲染时排最前 */
   pinned?: boolean;
+  /** 图生图参考图的本地落盘路径；载入参数时回填。可能与其他条目共享同一文件 */
+  referenceImage?: string;
 }
 
 function extensionFromUrl(url: string): ImageExtension {
@@ -121,21 +123,47 @@ export function parseImageDataUrl(
   return { extension, bytes: Buffer.from(match[2], "base64") };
 }
 
-/** 将图片 Data URL 落盘为规范命名文件，返回 /generated/ 本地路径 */
+/** 将图片 Data URL 落盘为规范命名文件，返回 /generated/ 本地路径；
+ *  seq 默认 1，与批次图片命名 {ts}-{i+1} 对齐；参考图用 0 避免撞名 */
 export async function saveDataUrlImage(
   dataUrl: string,
   timestamp: number = Date.now(),
   generatedDir: string = GENERATED_DIR,
   maxBytes: number = Number.POSITIVE_INFINITY,
+  seq: number = 1,
 ): Promise<string> {
   const { extension, bytes } = parseImageDataUrl(dataUrl);
   if (bytes.length > maxBytes) {
     throw new Error(`图片体积超出上限 ${maxBytes} 字节`);
   }
-  const fileName = `${timestamp}-1.${extension}`;
+  const fileName = `${timestamp}-${seq}.${extension}`;
   await mkdir(generatedDir, { recursive: true });
   await writeFile(join(generatedDir, fileName), bytes);
   return `/generated/${fileName}`;
+}
+
+const REFERENCE_HISTORY_SEQ = 0;
+
+/** 为历史记录归一化参考图：本地路径直接保留，上传 Data URL 落盘后返回路径，
+ *  其余（如落盘失败回退的远端 URL）返回 undefined 不入库 */
+export async function resolveHistoryReference(
+  imageFile: string,
+  timestamp: number,
+  generatedDir: string = GENERATED_DIR,
+): Promise<string | undefined> {
+  if (isLocalGeneratedPath(imageFile)) {
+    return imageFile;
+  }
+  if (IMAGE_DATA_URL_RE.test(imageFile)) {
+    return saveDataUrlImage(
+      imageFile,
+      timestamp,
+      generatedDir,
+      Number.POSITIVE_INFINITY,
+      REFERENCE_HISTORY_SEQ,
+    );
+  }
+  return undefined;
 }
 
 /** 续生记录：单图批次，图片即上一段视频的尾帧，模型/宽高比/风格继承来源 */
@@ -214,7 +242,18 @@ function collectEntryFileNames(entry: HistoryEntry): string[] {
       }
     }
   }
+  const refMatch = entry.referenceImage
+    ? GENERATED_MEDIA_FILE_RE.exec(entry.referenceImage)
+    : null;
+  if (refMatch) {
+    names.push(refMatch[1]);
+  }
   return names;
+}
+
+/** entries 仍引用的全部落盘文件；清理前用来排除跨条目共享路径 */
+function collectSharedFileNames(entries: HistoryEntry[]): Set<string> {
+  return new Set(entries.flatMap(collectEntryFileNames));
 }
 
 /** 删除落盘媒体文件：缺失容忍，失败仅告警——清理绝不能反噬已完成的历史写入 */
@@ -264,11 +303,11 @@ export async function appendHistory(
   await writeFile(historyFile, JSON.stringify(next, null, 2), "utf-8");
   // 先写历史后删文件：崩溃最坏留孤儿文件，反序则留下引用碎图的记录
   if (truncated.length > 0) {
-    await removeGeneratedFiles(
-      truncated.flatMap(collectEntryFileNames),
-      generatedDir,
-      "历史截断",
-    );
+    const kept = collectSharedFileNames(next);
+    const doomed = truncated
+      .flatMap(collectEntryFileNames)
+      .filter((name) => !kept.has(name));
+    await removeGeneratedFiles(doomed, generatedDir, "历史截断");
   }
   return next;
 }
@@ -313,11 +352,11 @@ export async function deleteHistoryEntry(
   }
   const [removed] = history.splice(index, 1);
   await writeFile(historyFile, JSON.stringify(history, null, 2), "utf-8");
-  await removeGeneratedFiles(
-    collectEntryFileNames(removed),
-    generatedDir,
-    "历史删除",
+  const kept = collectSharedFileNames(history);
+  const doomed = collectEntryFileNames(removed).filter(
+    (name) => !kept.has(name),
   );
+  await removeGeneratedFiles(doomed, generatedDir, "历史删除");
   return true;
 }
 

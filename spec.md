@@ -54,3 +54,17 @@
   - page.tsx：DialogTarget 联合类型 image|continuation；「继续生成」按钮挂在结果区完成视频下与历史区视频缩略图下（截取中禁用防并发、文案切「提取尾帧…」）；续生任务 submitting 期挂临时 uuid 键（taskKey），POST 成功后迁移至 `${新historyId}:0` 复合键并 refreshHistory——刷新恢复、就地重试、再续生自此均走普通链路；VideoDialog 增 continuationFrame prop（首帧缩略图 + 「从上一段最后一帧继续生成」说明），续生模式提示词留空、otherImages 为空；handleVideoSubmit 按 mode 分发
   - 测试先行：parseImageDataUrl 11 例（三类合法/jpeg 归一/8 类非法）、saveDataUrlImage 3 例（命名落盘/maxBytes 无残留/非法拒）、makeContinuationEntry 2 例（字段继承/style 缺省省略）、frameSeekTime 8 例（回退/钳位/NaN/Infinity）
   - 已知边界：首帧 Data URL 上传体积随分辨率增长（1080P JPEG 约几百 KB，远低于 20MB 上限）；续生中间记录与普通批次同样参与收藏/截断/删除（删除会连带清掉尾帧截图与视频，链条自此中断，符合预期）；README 同步）
+- 11. 产品体验优化三期 ✅（已完成：
+  - 结果自动定位：resultsRef + useEffect（!loading && images.length>0 时 scrollIntoView smooth），长表单下生成完成不再停留在首屏外
+  - 润色可撤销：prePolishPrompt 状态保存润色前原文，成功后出现「撤销润色」按钮一键恢复；抽出 updatePrompt 统一入口，手动编辑/模板/最近/载入参数均清除撤销态（润色成功路径直接 setPrompt 以保留原文）
+  - 等待计时：runGeneration 开始置零 elapsedSec，loading 期间 effect 每秒 tick（ELAPSED_TICK_MS），骨架下方「已等待 Xs · 完成后将自动定位到结果」；计时归零放提交入口而非 effect，规避 react-hooks/set-state-in-effect
+  - 错误浮层：全局 error 由表单下方内联块改为顶部 fixed toast（role=alert、可手动关闭、不自动消失），滚动到任意位置均可见；视频弹窗内 error 展示不变
+  - 纯组件内 UI 状态逻辑，无新增 lib 单元，不新增单测（同第 9 条口径）；lint/test/tsc 全绿，README 同步）
+- 12. 产品体验优化四期 ✅（已完成：
+  - 参考图入库与回填：HistoryEntry 增可选 referenceImage（本地路径）；saveDataUrlImage 增 seq 参数（默认 1，参考图用 0 防与同批图片 {ts}-1 撞名）；新增 resolveHistoryReference（本地路径保留 / Data URL 落盘 / 其余返回 undefined，远端回退 URL 与 gif 等不入库）；generate 路由成功后以**原始入参**（resolveSubjectReferences 换 Data URL 前的 rawParams）落参考图，失败仅告警不阻断；collectEntryFileNames 纳入 referenceImage，appendHistory 截断与 deleteHistoryEntry 均按「仍被保留/剩余条目引用的共享文件」过滤后再删（跨条目互推图场景）；handleLoadEntry 回填 entry.referenceImage ?? null（旧记录无字段一并清残留）
+  - 历史分页：HISTORY_PAGE_SIZE=10，displayHistory.slice + 「加载更多（还有 N 批）」自增按钮，收藏置顶序不受影响
+  - 模型说明：lib/minimax.ts 导出 MODEL_DESCRIPTIONS（image-01 质量更好 / image-01-live 生成更快，短中文自撰非上游文档措辞），select 选项渲染 `{model} · {说明}`
+  - 字数计数与快捷键：润色行改 justify-between，左「x/1500 · Ctrl/⌘+Enter 生成」，textarea onKeyDown 组合键 requestSubmit
+  - 灯箱生成视频：lightbox state 增 historyId（结果区传 lastHistoryId、历史区传 entry.id），Lightbox 增可选 onGenerateVideo(index)（仅入库批次渲染按钮）；新增 openVideoDialog 统一「查历史条目→busy 拦截→setDialogTarget」并关灯箱；注意该函数须声明在 activeVideoTasks useMemo 之后，否则 React Compiler preserve-manual-memoization 报错
+  - 测试先行：storage 新增 7 例（resolveHistoryReference 四态、saveDataUrlImage seq、删除/截断共享参考图保留）+ minimax MODEL_DESCRIPTIONS 键一致与非空短句用例；Red 8 例→Green 215 全过，lint/tsc/build 全绿，README 同步
+  - 已知边界：上传参考图 Data URL 若落盘失败（磁盘异常）该批次无参考图记录；同批次图片互为参考的引用关系不建模，仅按文件共享处理）

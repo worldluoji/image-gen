@@ -16,6 +16,7 @@ import {
   makeContinuationEntry,
   parseImageDataUrl,
   readHistory,
+  resolveHistoryReference,
   saveDataUrlImage,
   setHistoryPin,
   toLocalImageName,
@@ -586,6 +587,41 @@ describe("deleteHistoryEntry", () => {
     expect(await readHistory(file)).toEqual(before);
     expect(await fileExists(join(genDir, "200-1.png"))).toBe(true);
   });
+
+  it("清理被删条目的参考图文件；被其他条目共享的路径不删", async () => {
+    // a：图片 100-1.png + 自己的上传参考图 90-0.png；b 的参考图指向 a 的图片
+    await appendHistory(
+      makeEntry({
+        id: "a",
+        images: [
+          { localUrl: "/generated/100-1.png", remoteUrl: "https://x/1.png" },
+        ],
+        referenceImage: "/generated/90-0.png",
+      }),
+      file,
+      50,
+      genDir,
+    );
+    await appendHistory(
+      makeEntry({
+        id: "b",
+        images: [
+          { localUrl: "/generated/200-1.png", remoteUrl: "https://x/2.png" },
+        ],
+        referenceImage: "/generated/100-1.png",
+      }),
+      file,
+      50,
+      genDir,
+    );
+    await writeFile(join(genDir, "200-1.png"), "b-own");
+    await writeFile(join(genDir, "100-1.png"), "shared");
+    await writeFile(join(genDir, "90-0.png"), "owned");
+
+    expect(await deleteHistoryEntry("a", file, genDir)).toBe(true);
+    expect(await fileExists(join(genDir, "90-0.png"))).toBe(false);
+    expect(await fileExists(join(genDir, "100-1.png"))).toBe(true);
+  });
 });
 
 describe("appendHistory 截断文件清理", () => {
@@ -640,6 +676,32 @@ describe("appendHistory 截断文件清理", () => {
     expect(await fileExists(join(genDir, "100-1.png"))).toBe(false);
     expect(await fileExists(join(genDir, "101-1.mp4"))).toBe(false);
     expect(await fileExists(join(genDir, "200-1.png"))).toBe(true);
+  });
+
+  it("被淘汰条目的参考图若仍被保留条目引用则不删", async () => {
+    await writeFile(join(genDir, "100-1.png"), "shared-with-kept");
+    await writeFile(join(genDir, "90-0.png"), "owned-by-truncated");
+    await appendHistory(
+      makeEntry({
+        id: "old",
+        images: [
+          { localUrl: "/generated/100-1.png", remoteUrl: "https://x/1.png" },
+        ],
+        referenceImage: "/generated/90-0.png",
+      }),
+      file,
+      1,
+      genDir,
+    );
+    // 新条目把 old 的图片当参考图：old 被淘汰时 100-1.png 必须保留
+    await appendHistory(
+      makeEntry({ id: "new", referenceImage: "/generated/100-1.png" }),
+      file,
+      1,
+      genDir,
+    );
+    expect(await fileExists(join(genDir, "90-0.png"))).toBe(false);
+    expect(await fileExists(join(genDir, "100-1.png"))).toBe(true);
   });
 
   it("清理目录不存在时不抛错，不影响写入", async () => {
@@ -728,6 +790,69 @@ describe("saveDataUrlImage", () => {
     await expect(
       saveDataUrlImage("data:image/gif;base64," + SAMPLE_BASE64, TIMESTAMP, dir),
     ).rejects.toThrow(/Base64/);
+  });
+
+  it("seq 参数控制文件名序号（参考图用 0 避开同批图片）", async () => {
+    const localUrl = await saveDataUrlImage(
+      `data:image/png;base64,${SAMPLE_BASE64}`,
+      TIMESTAMP,
+      dir,
+      Number.POSITIVE_INFINITY,
+      0,
+    );
+    expect(localUrl).toBe(`/generated/${TIMESTAMP}-0.png`);
+    expect(await fileExists(join(dir, `${TIMESTAMP}-0.png`))).toBe(true);
+  });
+});
+
+describe("resolveHistoryReference", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "image-gen-ref-hist-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const cases = [
+    {
+      name: "本地生成图路径原样保留",
+      imageFile: "/generated/100-1.png",
+      expectSaved: false,
+      expected: "/generated/100-1.png",
+    },
+    {
+      name: "http 远端 URL 不入库",
+      imageFile: "https://example.com/a.png",
+      expectSaved: false,
+      expected: undefined,
+    },
+    {
+      name: "非图片字符串不入库",
+      imageFile: "not-a-reference",
+      expectSaved: false,
+      expected: undefined,
+    },
+  ];
+  for (const c of cases) {
+    it(c.name, async () => {
+      const result = await resolveHistoryReference(c.imageFile, TIMESTAMP, dir);
+      expect(result).toBe(c.expected);
+    });
+  }
+
+  it("Data URL 上传参考图落盘为 seq=0 文件", async () => {
+    const result = await resolveHistoryReference(
+      `data:image/jpeg;base64,${SAMPLE_BASE64}`,
+      TIMESTAMP,
+      dir,
+    );
+    expect(result).toBe(`/generated/${TIMESTAMP}-0.jpg`);
+    expect(
+      (await readFile(join(dir, `${TIMESTAMP}-0.jpg`))).equals(SAMPLE_BYTES),
+    ).toBe(true);
   });
 });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ASPECT_RATIOS,
   MODELS,
+  MODEL_DESCRIPTIONS,
   PROMPT_MAX_LENGTH,
   REFERENCE_MAX_BYTES,
   STYLE_MAX_LENGTH,
@@ -22,6 +23,17 @@ function makeParams(overrides: Partial<GenerationParams> = {}): GenerationParams
     ...overrides,
   };
 }
+
+describe("MODEL_DESCRIPTIONS", () => {
+  it("键与 MODELS 完全一致，说明为非空中文短句", () => {
+    expect(Object.keys(MODEL_DESCRIPTIONS).sort()).toEqual([...MODELS].sort());
+    for (const m of MODELS) {
+      const desc = MODEL_DESCRIPTIONS[m];
+      expect(desc.trim().length).toBeGreaterThan(0);
+      expect(desc.length).toBeLessThanOrEqual(10);
+    }
+  });
+});
 
 describe("STYLE_SAMPLE_IMAGES", () => {
   it("与 STYLE_PRESETS 数量一致且按索引顺序一一对应", () => {

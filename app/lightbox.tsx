@@ -9,6 +9,8 @@ interface LightboxProps {
   onIndexChange: (index: number) => void;
   onClose: () => void;
   onUseAsReference: (url: string) => void;
+  /** 提供则底部显示「生成视频」；仅对已入库的批次传入 */
+  onGenerateVideo?: (index: number) => void;
 }
 
 export function Lightbox({
@@ -17,6 +19,7 @@ export function Lightbox({
   onIndexChange,
   onClose,
   onUseAsReference,
+  onGenerateVideo,
 }: LightboxProps) {
   const total = images.length;
 
@@ -95,6 +98,15 @@ export function Lightbox({
         >
           作为参考图
         </button>
+        {onGenerateVideo && (
+          <button
+            type="button"
+            onClick={() => onGenerateVideo(index)}
+            className="text-white underline hover:text-zinc-300"
+          >
+            生成视频
+          </button>
+        )}
         <a
           href={image.localUrl}
           download={fileName}

@@ -8,6 +8,7 @@ import {
   appendHistory,
   isLocalGeneratedPath,
   localReferenceToDataUrl,
+  resolveHistoryReference,
   saveGeneratedFile,
   toLocalImageName,
   type GeneratedImage,
@@ -102,6 +103,18 @@ export async function POST(request: Request) {
       }),
     );
 
+    // 参考图入库用原始入参（本地路径直接保留；上传的 Data URL 落盘）；
+    // 失败不阻断，仅丢参考图记录
+    const rawRefFile = rawParams.subjectReference?.[0]?.imageFile;
+    let referenceImage: string | undefined;
+    if (typeof rawRefFile === "string" && rawRefFile !== "") {
+      try {
+        referenceImage = await resolveHistoryReference(rawRefFile, timestamp);
+      } catch (err) {
+        console.warn("参考图入库失败，跳过", err);
+      }
+    }
+
     const entry: HistoryEntry = {
       id: crypto.randomUUID(),
       createdAt: timestamp,
@@ -112,6 +125,7 @@ export async function POST(request: Request) {
       n: params.n,
       images,
       failedCount: result.failedCount,
+      ...(referenceImage ? { referenceImage } : {}),
     };
     await appendHistory(entry);
     await recordUsage("images", result.successCount);

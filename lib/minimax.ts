@@ -4,6 +4,11 @@ export const IMAGE_GENERATION_PATH = "/v1/image_generation";
 export const MODELS = ["image-01", "image-01-live"] as const;
 export type Model = (typeof MODELS)[number];
 
+export const MODEL_DESCRIPTIONS: Record<Model, string> = {
+  "image-01": "质量更好",
+  "image-01-live": "生成更快",
+};
+
 export const ASPECT_RATIOS = [
   "1:1",
   "16:9",
