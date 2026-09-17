@@ -50,6 +50,8 @@ export const STYLE_SAMPLE_IMAGES = STYLE_PRESETS.map(
   (_, i) => `/styles/${i}.png`,
 );
 export const STYLE_MAX_LENGTH = 100;
+// 风格选择器中「自定义」选项的哨兵值，提交时改用 customStyle 文本
+export const CUSTOM_STYLE = "自定义";
 const STYLE_PROMPT_PREFIX = "。画面风格：";
 
 export const REFERENCE_SUBJECT_TYPES = ["character"] as const;

@@ -18,6 +18,7 @@ import { VideoDialog, type VideoSubmitRequest } from "./video-dialog";
 import { Lightbox } from "./lightbox";
 import {
   ASPECT_RATIOS,
+  CUSTOM_STYLE,
   MODELS,
   MODEL_DESCRIPTIONS,
   N_MAX,
@@ -30,12 +31,23 @@ import {
   type AspectRatio,
   type Model,
 } from "@/lib/minimax";
+import {
+  DEFAULT_IMAGE_PREFS,
+  DRAFT_KEY,
+  IMAGE_PREFS_KEY,
+  parseImagePrefs,
+  parsePromptDraft,
+  storageGet,
+  storageSet,
+} from "@/lib/prefs";
 import type { GeneratedImage, HistoryEntry } from "@/lib/storage";
 import type { UsageDay } from "@/lib/usage";
 import { PROMPT_TEMPLATES, recentPrompts } from "@/lib/prompt-templates";
 
-const CUSTOM_STYLE = "自定义";
 const ELAPSED_TICK_MS = 1000;
+const DRAFT_SAVE_DEBOUNCE_MS = 500;
+const ERROR_DISMISS_MS = 8000;
+const N_OPTIONS = Array.from({ length: N_MAX - N_MIN + 1 }, (_, i) => i + N_MIN);
 // 历史区首屏批次数，点「加载更多」逐页追加
 const HISTORY_PAGE_SIZE = 10;
 
@@ -83,11 +95,15 @@ interface GenerateRequest {
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState<Model>("image-01");
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
-  const [n, setN] = useState(1);
-  const [styleChoice, setStyleChoice] = useState("");
-  const [customStyle, setCustomStyle] = useState("");
+  const [model, setModel] = useState<Model>(DEFAULT_IMAGE_PREFS.model);
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(
+    DEFAULT_IMAGE_PREFS.aspectRatio,
+  );
+  const [n, setN] = useState(DEFAULT_IMAGE_PREFS.n);
+  const [styleChoice, setStyleChoice] = useState(DEFAULT_IMAGE_PREFS.styleChoice);
+  const [customStyle, setCustomStyle] = useState(DEFAULT_IMAGE_PREFS.customStyle);
+  // 偏好回读放在 mount 后而非 useState 初值：避免 SSR 首帧与服务端 HTML 不一致
+  const [prefsReady, setPrefsReady] = useState(false);
   const [refImage, setRefImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -150,6 +166,48 @@ export default function Home() {
     void refreshUsage();
   }, [refreshUsage]);
 
+  useEffect(() => {
+    let cancelled = false;
+    // 微任务延后应用：此时 hydration 已完成，读客户端 localStorage 不会引起 SSR 不一致
+    void Promise.resolve().then(() => {
+      if (cancelled) {
+        return;
+      }
+      const prefs = parseImagePrefs(storageGet(IMAGE_PREFS_KEY));
+      setModel(prefs.model);
+      setAspectRatio(prefs.aspectRatio);
+      setN(prefs.n);
+      setStyleChoice(prefs.styleChoice);
+      setCustomStyle(prefs.customStyle);
+      setPrompt(parsePromptDraft(storageGet(DRAFT_KEY)));
+      setPrefsReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!prefsReady) {
+      return;
+    }
+    storageSet(
+      IMAGE_PREFS_KEY,
+      JSON.stringify({ model, aspectRatio, n, styleChoice, customStyle }),
+    );
+  }, [prefsReady, model, aspectRatio, n, styleChoice, customStyle]);
+
+  useEffect(() => {
+    if (!prefsReady) {
+      return;
+    }
+    const timer = setTimeout(
+      () => storageSet(DRAFT_KEY, prompt),
+      DRAFT_SAVE_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [prefsReady, prompt]);
+
   function updatePrompt(value: string) {
     setPrompt(value);
     setPrePolishPrompt(null);
@@ -165,6 +223,15 @@ export default function Home() {
     );
     return () => clearInterval(timer);
   }, [loading]);
+
+  // 顶部错误为瞬时提示，自动淡出；常驻会误导「仍在出错」
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+    const timer = setTimeout(() => setError(null), ERROR_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [error]);
 
   // 生成结束（有结果）时自动定位到结果区：表单较长，结果常落在首屏之外
   useEffect(() => {
@@ -219,6 +286,8 @@ export default function Home() {
         setImages(data.images);
         setFailedCount(data.failedCount ?? 0);
         setLastHistoryId(data.historyId ?? null);
+        // 成功即视为草稿已消费；失败分支不清，用户可改后重试
+        storageSet(DRAFT_KEY, "");
         void refreshHistory();
         void refreshUsage();
       }
@@ -767,17 +836,30 @@ export default function Home() {
             </select>
           </label>
 
-          <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
-            数量
-            <input
-              type="number"
-              min={N_MIN}
-              max={N_MAX}
-              value={n}
-              onChange={(e) => setN(Number(e.target.value))}
-              className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
-            />
-          </label>
+          <div className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+            <span>数量</span>
+            <div role="radiogroup" aria-label="数量" className="flex flex-wrap gap-1">
+              {N_OPTIONS.map((v) => {
+                const selected = n === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setN(v)}
+                    className={`rounded-md border px-2.5 py-1.5 text-sm transition-colors ${
+                      selected
+                        ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black"
+                        : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    }`}
+                  >
+                    {v}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
         </div>
 

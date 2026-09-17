@@ -68,3 +68,11 @@
   - 灯箱生成视频：lightbox state 增 historyId（结果区传 lastHistoryId、历史区传 entry.id），Lightbox 增可选 onGenerateVideo(index)（仅入库批次渲染按钮）；新增 openVideoDialog 统一「查历史条目→busy 拦截→setDialogTarget」并关灯箱；注意该函数须声明在 activeVideoTasks useMemo 之后，否则 React Compiler preserve-manual-memoization 报错
   - 测试先行：storage 新增 7 例（resolveHistoryReference 四态、saveDataUrlImage seq、删除/截断共享参考图保留）+ minimax MODEL_DESCRIPTIONS 键一致与非空短句用例；Red 8 例→Green 215 全过，lint/tsc/build 全绿，README 同步
   - 已知边界：上传参考图 Data URL 若落盘失败（磁盘异常）该批次无参考图记录；同批次图片互为参考的引用关系不建模，仅按文件共享处理）
+- 13. 偏好记忆与交互细节 ✅（已完成：
+  - 生成参数记忆（localStorage）：新增 lib/prefs.ts——IMAGE_PREFS_KEY / VIDEO_PREFS_KEY / DRAFT_KEY 三键（统一 image-gen: 前缀）；parseImagePrefs / parseVideoPrefs 纯函数容错回读（损坏 JSON / 非对象 / 逐字段非法或越界均回退 DEFAULT_IMAGE_PREFS / DEFAULT_VIDEO_PREFS；分辨率不被时长支持时回退默认分辨率；自定义风格按 STYLE_MAX_LENGTH 截断）；storageGet / storageSet 薄封装（typeof window 守卫 SSR，try/catch 吞隐私模式与配额异常，读写失败绝不影响主流程）；CUSTOM_STYLE 由 page.tsx 迁至 lib/minimax.ts 作单一事实来源
+  - 回读时机与 hydration：page.tsx 表单态初值取 DEFAULT_*，mount effect 内以微任务（Promise.resolve().then + cancelled 清理）应用偏好与草稿——既规避 react-hooks/set-state-in-effect（React Compiler 校验，effect 体顶层禁同步 setState），又保证 hydration 完成后才回填不产生首帧不一致；prefsReady 置真后偏好随表单状态变更写回；VideoDialog 仅在客户端交互后挂载（无 SSR/hydration 参与），直接惰性 useState 读偏好、变更即写
+  - Prompt 草稿：停止输入 DRAFT_SAVE_DEBOUNCE_MS=500ms 落 DRAFT_KEY，parsePromptDraft 按 PROMPT_MAX_LENGTH 截断回读；恢复走 setPrompt 而非 updatePrompt（不触发「撤销润色」）；生成成功后清空草稿（失败保留以便改后重试）；参考图刻意不入草稿（10MB Data URL 远超 localStorage ~5MB 配额）
+  - 错误浮层 8s 自动清除（ERROR_DISMISS_MS，error 变化即重置计时），手动关闭保留；弹窗内 error 展示独立于顶部 toast 不受影响
+  - VideoDialog 增 Escape 关闭（keydown 监听 + onClose 依赖，对齐 Lightbox）
+  - 数量由 number 输入改 1-9 分段点选（role=radiogroup + aria-checked，N_OPTIONS 由 N_MIN/N_MAX 派生，杜绝越界输入）
+  - 测试先行：lib/prefs.test.ts 20 例表驱动（图像 9 + 视频 6 + 草稿 4 + 键名 1：合法回读、损坏/非对象、字段级回退、n 越界/非整数、styleChoice 哨兵与预设白名单、超长截断、时长-分辨率组合回退、null 草稿、键唯一性）；Red→Green 全过，vitest 235 全绿、tsc/lint 通过（无浏览器端 localStorage 集成，IO 为守卫薄封装不单独测）；README 同步）

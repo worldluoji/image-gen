@@ -1,9 +1,7 @@
 "use client";
 
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import {
-  DEFAULT_VIDEO_DURATION,
-  DEFAULT_VIDEO_RESOLUTION,
   RESOLUTIONS_BY_DURATION,
   VIDEO_DURATIONS,
   VIDEO_FRAME_MAX_BYTES,
@@ -13,6 +11,12 @@ import {
   type VideoDuration,
   type VideoResolution,
 } from "@/lib/video";
+import {
+  parseVideoPrefs,
+  storageGet,
+  storageSet,
+  VIDEO_PREFS_KEY,
+} from "@/lib/prefs";
 
 export interface VideoSubmitRequest {
   prompt: string;
@@ -44,10 +48,26 @@ export function VideoDialog({
   onSubmit,
 }: VideoDialogProps) {
   const [prompt, setPrompt] = useState(initialPrompt);
-  const [duration, setDuration] = useState<VideoDuration>(DEFAULT_VIDEO_DURATION);
-  const [resolution, setResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
+  // 弹窗仅在客户端交互后挂载，无 hydration 问题，可直接惰性读偏好
+  const [savedPrefs] = useState(() => parseVideoPrefs(storageGet(VIDEO_PREFS_KEY)));
+  const [duration, setDuration] = useState<VideoDuration>(savedPrefs.duration);
+  const [resolution, setResolution] = useState<VideoResolution>(savedPrefs.resolution);
   const [lastFrameImage, setLastFrameImage] = useState("");
   const [lastFrameError, setLastFrameError] = useState<string | null>(null);
+
+  useEffect(() => {
+    storageSet(VIDEO_PREFS_KEY, JSON.stringify({ duration, resolution }));
+  }, [duration, resolution]);
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
 
   const allowedResolutions = RESOLUTIONS_BY_DURATION[duration];
 
